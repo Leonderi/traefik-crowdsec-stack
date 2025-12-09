@@ -371,11 +371,19 @@ install_frontend_traefik() {
 
     # Konfigurationsdateien kopieren
     show_step $current_step $total_steps "Kopiere Konfigurationsdateien"
+
+    # Verzeichnisse erstellen falls nicht vorhanden
+    mkdir -p config logs letsencrypt
+
     cp .env.sample .env
     cp traefik.yml.sample traefik.yml
     cp docker-compose.yml.sample docker-compose.yml
     cp letsencrypt/acme.json.sample letsencrypt/acme.json
     chmod 600 letsencrypt/acme.json
+
+    # ABSOLUTE_PATH korrekt setzen
+    sed -i "s|ABSOLUTE_PATH=.*|ABSOLUTE_PATH=$PWD|g" .env
+
     step_done "Konfigurationsdateien kopiert"
     ((current_step++))
 
