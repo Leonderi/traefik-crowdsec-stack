@@ -26,10 +26,13 @@ certificatesResolvers:
 
 providers:
   # HTTP Provider für Backend-Traefiks
-  # Endpoints werden während der Installation konfiguriert
-  http:
-    endpoints: []
-    pollInterval: "10s"
+  # Wird automatisch während der Installation konfiguriert
+  # Entkommentieren und Endpoints hinzufügen falls benötigt:
+  # http:
+  #   endpoints:
+  #     - "http://172.16.16.140/api"
+  #     - "http://172.16.16.141/api"
+  #   pollInterval: "10s"
 
   # File Provider für zusätzliche dynamische Konfiguration
   file:

@@ -565,16 +565,17 @@ install_frontend_traefik() {
     if [ ${#BACKEND_IPS[@]} -gt 0 ]; then
         ENDPOINTS=""
         for ip in "${BACKEND_IPS[@]}"; do
-            if [ -z "$ENDPOINTS" ]; then
-                ENDPOINTS="      - \"http://$ip/api\""
-            else
-                ENDPOINTS="$ENDPOINTS\n      - \"http://$ip/api\""
-            fi
+            ENDPOINTS="$ENDPOINTS\n    - \"http://$ip/api\""
         done
-        sed -i "/endpoints: \[\]/c\    endpoints:\n$ENDPOINTS" data/traefik-frontend/config/traefik.yml
+
+        # HTTP Provider aktivieren und Endpoints setzen
+        # Suche die auskommentierten Zeilen und ersetze sie durch aktiven Block
+        sed -i '/# http:/,/# *pollInterval:/c\  http:\n    endpoints:'"$ENDPOINTS"'\n    pollInterval: "10s"' data/traefik-frontend/config/traefik.yml
+
         echo -e "${green}${#BACKEND_IPS[@]} Backend-VM(s) konfiguriert${nc}"
     else
-        echo -e "${yellow}Keine Backend-VMs konfiguriert. Sie können diese später in data/traefik-frontend/config/traefik.yml hinzufügen.${nc}"
+        echo -e "${yellow}Keine Backend-VMs konfiguriert.${nc}"
+        echo -e "${yellow}HTTP Provider bleibt deaktiviert. Sie können ihn später in data/traefik-frontend/config/traefik.yml aktivieren.${nc}"
     fi
     step_done "Backend-VMs konfiguriert"
     ((current_step++))
