@@ -77,6 +77,96 @@ confirm() {
 }
 
 # =============================================================================
+# Installationsverzeichnis Setup
+# =============================================================================
+
+setup_installation_directory() {
+    local mode=$1
+    local mode_name=""
+    local target_dir=""
+
+    # Modus-spezifischen Namen festlegen
+    case "$mode" in
+        "frontend")
+            mode_name="traefik-frontend"
+            ;;
+        "backend-standard")
+            mode_name="traefik-backend"
+            ;;
+        "backend-proxy")
+            mode_name="traefik-backend-proxy"
+            ;;
+    esac
+
+    echo -e "\n${bold}${cyan}Installationsverzeichnis konfigurieren${nc}\n"
+
+    # Nach Basis-Verzeichnis fragen
+    read -p "Basis-Verzeichnis [/opt/containers]: " BASE_DIR
+    BASE_DIR=${BASE_DIR:-/opt/containers}
+
+    # Vollständigen Pfad erstellen
+    INSTALL_DIR="${BASE_DIR}/${mode_name}"
+
+    echo -e "\n${yellow}Zielverzeichnis:${nc} $INSTALL_DIR"
+
+    # Prüfen ob Verzeichnis existiert
+    if [ -d "$INSTALL_DIR" ]; then
+        echo -e "${yellow}Verzeichnis existiert bereits!${nc}"
+        if ! confirm "Möchten Sie die bestehende Installation aktualisieren/neu konfigurieren?" "n"; then
+            error_exit "Installation abgebrochen"
+        fi
+    else
+        if ! confirm "Verzeichnis erstellen und dort installieren?" "y"; then
+            error_exit "Installation abgebrochen"
+        fi
+
+        # Verzeichnis erstellen
+        mkdir -p "$INSTALL_DIR" || error_exit "Konnte Verzeichnis nicht erstellen: $INSTALL_DIR"
+        echo -e "${green}✓ Verzeichnis erstellt${nc}"
+    fi
+
+    # Aktuelles Source-Verzeichnis merken
+    SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # Benötigte Dateien kopieren je nach Modus
+    echo -e "\n${cyan}Kopiere benötigte Dateien...${nc}"
+
+    case "$mode" in
+        "frontend")
+            mkdir -p "$INSTALL_DIR"/{frontend,data/traefik-frontend/{config,logs,letsencrypt}}
+            cp -r "$SOURCE_DIR/frontend/traefik.yml.sample" "$INSTALL_DIR/frontend/" 2>/dev/null || true
+            cp -r "$SOURCE_DIR/data/traefik-frontend/.env.sample" "$INSTALL_DIR/data/traefik-frontend/" 2>/dev/null || true
+            cp -r "$SOURCE_DIR/data/traefik-frontend/config/traefik.yml.sample" "$INSTALL_DIR/data/traefik-frontend/config/" 2>/dev/null || true
+            cp -r "$SOURCE_DIR/data/traefik-frontend/letsencrypt/acme.json.sample" "$INSTALL_DIR/data/traefik-frontend/letsencrypt/" 2>/dev/null || true
+            cp "$SOURCE_DIR/docker-compose.frontend.yml" "$INSTALL_DIR/" 2>/dev/null || true
+            ;;
+        "backend-standard")
+            mkdir -p "$INSTALL_DIR"/{backend,data}
+            cp -r "$SOURCE_DIR/backend"/* "$INSTALL_DIR/backend/" 2>/dev/null || true
+            cp -r "$SOURCE_DIR/data"/* "$INSTALL_DIR/data/" 2>/dev/null || true
+            cp "$SOURCE_DIR/docker-compose.yml" "$INSTALL_DIR/" 2>/dev/null || true
+            cp "$SOURCE_DIR/.env.sample" "$INSTALL_DIR/" 2>/dev/null || true
+            ;;
+        "backend-proxy")
+            mkdir -p "$INSTALL_DIR"/{backend,data}
+            cp -r "$SOURCE_DIR/backend"/* "$INSTALL_DIR/backend/" 2>/dev/null || true
+            cp -r "$SOURCE_DIR/data"/* "$INSTALL_DIR/data/" 2>/dev/null || true
+            cp "$SOURCE_DIR/docker-compose.yml.proxy.sample" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
+            cp "$SOURCE_DIR/.env.sample" "$INSTALL_DIR/" 2>/dev/null || true
+            ;;
+    esac
+
+    echo -e "${green}✓ Dateien kopiert${nc}"
+
+    # In Zielverzeichnis wechseln
+    cd "$INSTALL_DIR" || error_exit "Konnte nicht in Zielverzeichnis wechseln"
+    echo -e "${green}✓ Arbeitsverzeichnis: $INSTALL_DIR${nc}\n"
+
+    # Verzeichnis für spätere Verwendung exportieren
+    export INSTALL_DIR
+}
+
+# =============================================================================
 # Hauptmenü
 # =============================================================================
 
@@ -355,11 +445,10 @@ install_frontend_traefik() {
     total_steps=10
     current_step=2
 
-    # Arbeitsverzeichnis setzen
-    show_step $current_step $total_steps "Setze Arbeitsverzeichnis"
-    SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-    cd "$SCRIPT_DIR" || error_exit "Root-Verzeichnis nicht gefunden"
-    step_done "Arbeitsverzeichnis gesetzt"
+    # Arbeitsverzeichnis prüfen
+    show_step $current_step $total_steps "Prüfe Arbeitsverzeichnis"
+    echo -e "${cyan}Arbeitsverzeichnis: $(pwd)${nc}"
+    step_done "Arbeitsverzeichnis geprüft"
     ((current_step++))
 
     # Apache2-utils installieren
@@ -578,19 +667,10 @@ install_backend_stack() {
     total_steps=18
     current_step=2
 
-    # Setze das Arbeitsverzeichnis
-    show_step $current_step $total_steps "Setze Arbeitsverzeichnis"
-    SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-    cd "$SCRIPT_DIR" || exit
-    step_done "Arbeitsverzeichnis gesetzt"
-    ((current_step++))
-
-    # Root-Rechte prüfen
-    show_step $current_step $total_steps "Überprüfen von Root-Rechten"
-    if [ "$EUID" -ne 0 ]; then
-        error_exit "Bitte führe das Skript mit Root-Rechten aus."
-    fi
-    step_done "Root-Rechte überprüft"
+    # Arbeitsverzeichnis prüfen
+    show_step $current_step $total_steps "Prüfe Arbeitsverzeichnis"
+    echo -e "${cyan}Arbeitsverzeichnis: $(pwd)${nc}"
+    step_done "Arbeitsverzeichnis geprüft"
     ((current_step++))
 
     # Installiere apache2-utils
@@ -686,8 +766,8 @@ install_backend_stack() {
         src=$(echo $file_pair | awk '{print $1}')
         dst=$(echo $file_pair | awk '{print $2}')
 
-        src_path="${SCRIPT_DIR}/${src}"
-        dst_path="${SCRIPT_DIR}/${dst}"
+        src_path="${src}"
+        dst_path="${dst}"
 
         if [ -f "$dst_path" ]; then
             echo -e "${yellow}Behalte bestehende Datei: ${dst}${nc}"
@@ -726,10 +806,10 @@ install_backend_stack() {
     # Bouncer-Passwörter generieren
     show_step $current_step $total_steps "Generiere Bouncer-Passwörter"
     BOUNCER_KEY_TRAEFIK_PASSWORD=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9!@#$%^&*()-_=+[]{}<>?|')
-    echo -e "\nBOUNCER_KEY_TRAEFIK=$BOUNCER_KEY_TRAEFIK_PASSWORD" >> ${SCRIPT_DIR}/.env
+    echo -e "\nBOUNCER_KEY_TRAEFIK=$BOUNCER_KEY_TRAEFIK_PASSWORD" >> .env
     sleep 1
     BOUNCER_KEY_FIREWALL_PASSWORD=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9!@#$%^&*()-_=+[]{}<>?|')
-    echo "BOUNCER_KEY_FIREWALL=$BOUNCER_KEY_FIREWALL_PASSWORD" >> ${SCRIPT_DIR}/.env
+    echo "BOUNCER_KEY_FIREWALL=$BOUNCER_KEY_FIREWALL_PASSWORD" >> .env
     step_done "Bouncer-Passwörter generiert"
     ((current_step++))
 
@@ -781,7 +861,7 @@ install_backend_stack() {
     # Wunsch-Domain für Traefik-Dashboard
     show_step $current_step $total_steps "Konfiguriere Wunsch-Domain für Traefik-Dashboard"
 
-    env_file="${SCRIPT_DIR}/.env"
+    env_file=".env"
     if [ ! -f "$env_file" ]; then
         error_exit "Die Datei $env_file existiert nicht."
     fi
@@ -825,7 +905,7 @@ install_backend_stack() {
 
     # CrowdSec Konfiguration
     show_step $current_step $total_steps "CrowdSec Konfiguration anpassen"
-    acquis_file="${SCRIPT_DIR}/data/crowdsec/config/acquis.yaml"
+    acquis_file="data/crowdsec/config/acquis.yaml"
     if [ ! -f "$acquis_file" ]; then
         error_exit "Die Datei $acquis_file existiert nicht."
     fi
@@ -888,7 +968,7 @@ EOL
     # Dashboard-Benutzer erstellen
     show_step $current_step $total_steps "Erstelle Benutzer für Traefik-Dashboard"
     read -p "Bitte gib den gewünschten Benutzernamen für das Dashboard ein: " dashboard_user
-    htpasswd_file="${SCRIPT_DIR}/data/traefik/.htpasswd"
+    htpasswd_file="data/traefik/.htpasswd"
     sudo htpasswd -c "$htpasswd_file" "$dashboard_user"
     step_done "Dashboard-Benutzer erstellt"
     ((current_step++))
@@ -934,6 +1014,9 @@ main() {
 
     # Zeige Banner und Menü
     show_main_menu
+
+    # Installationsverzeichnis einrichten
+    setup_installation_directory "$INSTALL_TYPE"
 
     # Netzwerk-Konfiguration (optional)
     configure_network
