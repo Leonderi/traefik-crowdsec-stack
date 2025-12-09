@@ -133,11 +133,11 @@ setup_installation_directory() {
 
     case "$mode" in
         "frontend")
-            mkdir -p "$INSTALL_DIR"/{frontend,data/traefik-frontend/{config,logs,letsencrypt}}
+            mkdir -p "$INSTALL_DIR"/{frontend,data/traefik-frontend/certs} /var/log/traefik
             cp -r "$SOURCE_DIR/frontend/traefik.yml.sample" "$INSTALL_DIR/frontend/" 2>/dev/null || true
             cp -r "$SOURCE_DIR/data/traefik-frontend/.env.sample" "$INSTALL_DIR/data/traefik-frontend/" 2>/dev/null || true
-            cp -r "$SOURCE_DIR/data/traefik-frontend/config/traefik.yml.sample" "$INSTALL_DIR/data/traefik-frontend/config/" 2>/dev/null || true
-            cp -r "$SOURCE_DIR/data/traefik-frontend/letsencrypt/acme.json.sample" "$INSTALL_DIR/data/traefik-frontend/letsencrypt/" 2>/dev/null || true
+            cp -r "$SOURCE_DIR/data/traefik-frontend/traefik.yml.sample" "$INSTALL_DIR/data/traefik-frontend/" 2>/dev/null || true
+            cp -r "$SOURCE_DIR/data/traefik-frontend/certs/acme.json.sample" "$INSTALL_DIR/data/traefik-frontend/certs/" 2>/dev/null || true
             cp "$SOURCE_DIR/docker-compose.frontend.yml" "$INSTALL_DIR/" 2>/dev/null || true
             ;;
         "backend-standard")
@@ -442,7 +442,7 @@ check_and_install_docker() {
 install_frontend_traefik() {
     echo -e "\n${bold}${cyan}Installation: Frontend Traefik${nc}\n"
 
-    total_steps=10
+    total_steps=11
     current_step=2
 
     # Arbeitsverzeichnis prüfen
@@ -480,9 +480,9 @@ install_frontend_traefik() {
         fi
     fi
 
-    if [ -f "data/traefik-frontend/config/traefik.yml" ]; then
+    if [ -f "data/traefik-frontend/traefik.yml" ]; then
         # Backend IPs aus traefik config auslesen
-        EXISTING_BACKEND_IPS=($(grep -oP 'http://\K[0-9.]+(?=/api)' data/traefik-frontend/config/traefik.yml 2>/dev/null))
+        EXISTING_BACKEND_IPS=($(grep -oP 'http://\K[0-9.]+(?=/api)' data/traefik-frontend/traefik.yml 2>/dev/null))
         if [ ${#EXISTING_BACKEND_IPS[@]} -gt 0 ]; then
             echo -e "${cyan}Gefundene Backend-VMs: ${EXISTING_BACKEND_IPS[*]}${nc}"
         fi
@@ -495,14 +495,14 @@ install_frontend_traefik() {
     show_step $current_step $total_steps "Bereite Konfigurationsdateien vor"
 
     # Verzeichnisse erstellen falls nicht vorhanden
-    mkdir -p data/traefik-frontend/{config,logs,letsencrypt}
+    mkdir -p data/traefik-frontend/certs /var/log/traefik
 
     # Nur kopieren wenn nicht vorhanden, sonst behalten
     [ ! -f "data/traefik-frontend/.env" ] && cp data/traefik-frontend/.env.sample data/traefik-frontend/.env
     [ ! -f "frontend/traefik.yml" ] && cp frontend/traefik.yml.sample frontend/traefik.yml
-    [ ! -f "data/traefik-frontend/config/traefik.yml" ] && cp data/traefik-frontend/config/traefik.yml.sample data/traefik-frontend/config/traefik.yml
-    [ ! -f "data/traefik-frontend/letsencrypt/acme.json" ] && cp data/traefik-frontend/letsencrypt/acme.json.sample data/traefik-frontend/letsencrypt/acme.json
-    chmod 600 data/traefik-frontend/letsencrypt/acme.json
+    [ ! -f "data/traefik-frontend/traefik.yml" ] && cp data/traefik-frontend/traefik.yml.sample data/traefik-frontend/traefik.yml
+    [ ! -f "data/traefik-frontend/certs/acme.json" ] && cp data/traefik-frontend/certs/acme.json.sample data/traefik-frontend/certs/acme.json
+    chmod 600 data/traefik-frontend/certs/acme.json
 
     # ABSOLUTE_PATH korrekt setzen (immer aktualisieren)
 
@@ -517,7 +517,7 @@ install_frontend_traefik() {
     else
         read -p "Bitte geben Sie Ihre E-Mail-Adresse für Let's Encrypt ein: " ACME_EMAIL
     fi
-    sed -i "s/email: \".*\"/email: \"$ACME_EMAIL\"/g" data/traefik-frontend/config/traefik.yml
+    sed -i "s/email: \".*\"/email: \"$ACME_EMAIL\"/g" data/traefik-frontend/traefik.yml
     sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$ACME_EMAIL/g" data/traefik-frontend/.env
     step_done "Let's Encrypt konfiguriert"
     ((current_step++))
@@ -570,12 +570,12 @@ install_frontend_traefik() {
 
         # HTTP Provider aktivieren und Endpoints setzen
         # Suche die auskommentierten Zeilen und ersetze sie durch aktiven Block
-        sed -i '/# http:/,/# *pollInterval:/c\  http:\n    endpoints:'"$ENDPOINTS"'\n    pollInterval: "10s"' data/traefik-frontend/config/traefik.yml
+        sed -i '/# http:/,/# *pollInterval:/c\  http:\n    endpoints:'"$ENDPOINTS"'\n    pollInterval: "10s"' data/traefik-frontend/traefik.yml
 
         echo -e "${green}${#BACKEND_IPS[@]} Backend-VM(s) konfiguriert${nc}"
     else
         echo -e "${yellow}Keine Backend-VMs konfiguriert.${nc}"
-        echo -e "${yellow}HTTP Provider bleibt deaktiviert. Sie können ihn später in data/traefik-frontend/config/traefik.yml aktivieren.${nc}"
+        echo -e "${yellow}HTTP Provider bleibt deaktiviert. Sie können ihn später in data/traefik-frontend/traefik.yml aktivieren.${nc}"
     fi
     step_done "Backend-VMs konfiguriert"
     ((current_step++))
@@ -628,23 +628,33 @@ install_frontend_traefik() {
     fi
     ((current_step++))
 
+    # Docker Compose Datei umbenennen für einfachere Nutzung
+    show_step $current_step $total_steps "Finalisiere Installation"
+    if [ -f "docker-compose.frontend.yml" ]; then
+        mv docker-compose.frontend.yml docker-compose.yml
+        echo -e "${green}✓ docker-compose.yml erstellt${nc}"
+    fi
+    step_done "Installation finalisiert"
+    ((current_step++))
+
     # Stack starten
     show_step $current_step $total_steps "Starte Frontend Traefik"
     if confirm "Möchten Sie den Frontend Traefik jetzt starten?" "y"; then
-        docker compose -f docker-compose.frontend.yml up -d
+        docker compose up -d
         step_done "Frontend Traefik gestartet"
 
         echo -e "\n${green}${bold}Installation abgeschlossen!${nc}\n"
         echo -e "${cyan}Dashboard erreichbar unter:${nc} https://$DASHBOARD_HOST"
         echo -e "${cyan}Benutzername:${nc} $DASHBOARD_USER"
         echo -e "\n${cyan}Zum Verwalten des Stacks:${nc}"
-        echo -e "  Start:   docker compose -f docker-compose.frontend.yml up -d"
-        echo -e "  Stop:    docker compose -f docker-compose.frontend.yml down"
-        echo -e "  Logs:    docker compose -f docker-compose.frontend.yml logs -f"
+        echo -e "  Start:   docker compose up -d"
+        echo -e "  Stop:    docker compose down"
+        echo -e "  Logs:    docker compose logs -f traefik-frontend"
+        echo -e "\n${cyan}Installationsverzeichnis:${nc} $(pwd)"
     else
         step_done "Start übersprungen"
         echo -e "\n${yellow}Sie können den Stack später mit diesem Befehl starten:${nc}"
-        echo -e "  docker compose -f docker-compose.frontend.yml up -d"
+        echo -e "  cd $(pwd) && docker compose up -d"
     fi
 }
 

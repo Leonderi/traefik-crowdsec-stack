@@ -13,10 +13,9 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ../data/traefik-frontend/config/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ../data/traefik-frontend/config:/etc/traefik/config:ro
-      - ../data/traefik-frontend/letsencrypt:/letsencrypt
-      - ../data/traefik-frontend/logs:/var/log/traefik
+      - ../data/traefik-frontend/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ../data/traefik-frontend/certs:/letsencrypt
+      - /var/log/traefik:/var/log/traefik
     labels:
       # Dashboard des vorgeschalteten Traefik
       traefik.enable: "true"

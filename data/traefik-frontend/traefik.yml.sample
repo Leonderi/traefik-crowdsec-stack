@@ -22,7 +22,8 @@ certificatesResolvers:
     acme:
       email: "your@email.com"
       storage: "/letsencrypt/acme.json"
-      tlsChallenge: {}
+      httpChallenge:
+        entryPoint: web
 
 providers:
   # Docker Provider für Container-Discovery (inkl. eigenes Dashboard)
@@ -38,11 +39,6 @@ providers:
   #     - "http://172.16.16.140/api"
   #     - "http://172.16.16.141/api"
   #   pollInterval: "10s"
-
-  # File Provider für zusätzliche dynamische Konfiguration
-  file:
-    directory: "/etc/traefik/config"
-    watch: true
 
 ping:
   entryPoint: "web"
