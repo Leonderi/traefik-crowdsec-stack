@@ -131,23 +131,147 @@ show_main_menu() {
 # Netzwerk-Konfiguration
 # =============================================================================
 
+# Netzwerk-Interface erkennen
+detect_network_interface() {
+    # Primäres Interface finden (ignoriere lo)
+    INTERFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
+    if [ -z "$INTERFACE" ]; then
+        # Fallback: Erstes nicht-lo Interface
+        INTERFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$' | head -n1)
+    fi
+    echo "$INTERFACE"
+}
+
+# Aktuelle netplan-Konfiguration auslesen
+read_current_netplan() {
+    local netplan_file=$(find /etc/netplan -name "*.yaml" -o -name "*.yml" 2>/dev/null | head -n1)
+
+    if [ -n "$netplan_file" ]; then
+        echo -e "${cyan}Aktuelle netplan-Konfiguration gefunden: $netplan_file${nc}"
+
+        # Aktuelle IP auslesen
+        CURRENT_IP=$(ip -4 addr show "$INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+        CURRENT_CIDR=$(ip -4 addr show "$INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d'/' -f2)
+        CURRENT_GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n1)
+
+        echo -e "${yellow}Aktuelle Konfiguration:${nc}"
+        echo -e "  Interface: $INTERFACE"
+        echo -e "  IP-Adresse: $CURRENT_IP${CURRENT_CIDR:+/$CURRENT_CIDR}"
+        echo -e "  Gateway: $CURRENT_GATEWAY"
+    else
+        echo -e "${yellow}Keine netplan-Konfiguration gefunden.${nc}"
+    fi
+}
+
+# Netplan-Konfiguration anwenden
+apply_network_config() {
+    local interface=$1
+    local ip_address=$2
+    local gateway=$3
+    local dns_servers=${4:-"8.8.8.8,1.1.1.1"}
+
+    # Netplan-Datei finden oder erstellen
+    local netplan_file=$(find /etc/netplan -name "*.yaml" -o -name "*.yml" 2>/dev/null | head -n1)
+
+    if [ -z "$netplan_file" ]; then
+        netplan_file="/etc/netplan/00-installer-config.yaml"
+        echo -e "${yellow}Erstelle neue netplan-Konfiguration: $netplan_file${nc}"
+    else
+        # Backup erstellen
+        cp "$netplan_file" "${netplan_file}.backup-$(date +%Y%m%d-%H%M%S)"
+        echo -e "${cyan}Backup erstellt: ${netplan_file}.backup-$(date +%Y%m%d-%H%M%S)${nc}"
+    fi
+
+    # DNS-Server array erstellen
+    IFS=',' read -ra DNS_ARRAY <<< "$dns_servers"
+    local dns_yaml=""
+    for dns in "${DNS_ARRAY[@]}"; do
+        dns_yaml+="        - $dns\n"
+    done
+
+    # Netplan-Konfiguration schreiben
+    cat > "$netplan_file" << EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $interface:
+      addresses:
+        - $ip_address
+      routes:
+        - to: default
+          via: $gateway
+      nameservers:
+        addresses:
+$(echo -e "$dns_yaml")
+EOF
+
+    # Rechte setzen
+    chmod 600 "$netplan_file"
+
+    echo -e "${cyan}Wende netplan-Konfiguration an...${nc}"
+    if netplan apply; then
+        echo -e "${green}✓ Netzwerk-Konfiguration erfolgreich angewendet${nc}"
+
+        # Neue Konfiguration anzeigen
+        echo -e "\n${yellow}Neue Netzwerk-Konfiguration:${nc}"
+        ip -4 addr show "$interface" | grep inet
+        return 0
+    else
+        echo -e "${red}✗ Fehler beim Anwenden der Konfiguration${nc}"
+        echo -e "${yellow}Backup wiederherstellen mit:${nc} mv ${netplan_file}.backup-* $netplan_file && netplan apply"
+        return 1
+    fi
+}
+
 configure_network() {
     echo -e "\n${bold}Netzwerk-Konfiguration${nc}\n"
 
-    if confirm "Möchten Sie die IP-Adresse dieser Maschine konfigurieren?" "n"; then
-        echo -e "${yellow}Hinweis: Für die IP-Konfiguration werden Root-Rechte benötigt${nc}"
-        read -p "Bitte geben Sie die gewünschte IP-Adresse ein (z.B. 172.16.16.140): " NEW_IP
-        read -p "Bitte geben Sie das Subnetz ein (z.B. 255.255.255.0 oder /24): " SUBNET
-        read -p "Bitte geben Sie das Gateway ein: " GATEWAY
+    # Netzwerk-Interface erkennen
+    INTERFACE=$(detect_network_interface)
 
-        # IP-Konfiguration wird später durchgeführt
-        CONFIGURE_IP=true
+    if confirm "Möchten Sie die IP-Adresse dieser Maschine konfigurieren?" "n"; then
+        echo -e "\n${cyan}Aktuelle Netzwerk-Konfiguration wird ausgelesen...${nc}\n"
+        read_current_netplan
+
+        echo -e "\n${bold}Neue IP-Konfiguration:${nc}"
+
+        # IP-Adresse
+        read -p "IP-Adresse (z.B. 172.16.16.140) [${CURRENT_IP}]: " NEW_IP
+        NEW_IP=${NEW_IP:-$CURRENT_IP}
+
+        # CIDR/Subnet
+        read -p "CIDR/Subnetz (z.B. 24 für /24) [${CURRENT_CIDR:-24}]: " NEW_CIDR
+        NEW_CIDR=${NEW_CIDR:-${CURRENT_CIDR:-24}}
+
+        # Gateway
+        read -p "Gateway (z.B. 172.16.16.1) [${CURRENT_GATEWAY}]: " NEW_GATEWAY
+        NEW_GATEWAY=${NEW_GATEWAY:-$CURRENT_GATEWAY}
+
+        # DNS-Server
+        read -p "DNS-Server (kommagetrennt) [8.8.8.8,1.1.1.1]: " NEW_DNS
+        NEW_DNS=${NEW_DNS:-"8.8.8.8,1.1.1.1"}
+
+        echo -e "\n${yellow}Folgende Konfiguration wird angewendet:${nc}"
+        echo -e "  Interface: ${cyan}$INTERFACE${nc}"
+        echo -e "  IP-Adresse: ${cyan}$NEW_IP/$NEW_CIDR${nc}"
+        echo -e "  Gateway: ${cyan}$NEW_GATEWAY${nc}"
+        echo -e "  DNS: ${cyan}$NEW_DNS${nc}"
+
+        if confirm "\nKonfiguration jetzt anwenden?" "y"; then
+            CONFIGURE_IP=true
+        else
+            echo -e "${yellow}IP-Konfiguration übersprungen${nc}"
+            CONFIGURE_IP=false
+        fi
     else
         CONFIGURE_IP=false
     fi
 
     if confirm "Möchten Sie den Hostnamen dieser Maschine ändern?" "n"; then
-        read -p "Bitte geben Sie den gewünschten Hostnamen ein: " NEW_HOSTNAME
+        CURRENT_HOSTNAME=$(hostname)
+        read -p "Neuer Hostname [$CURRENT_HOSTNAME]: " NEW_HOSTNAME
+        NEW_HOSTNAME=${NEW_HOSTNAME:-$CURRENT_HOSTNAME}
         CONFIGURE_HOSTNAME=true
     else
         CONFIGURE_HOSTNAME=false
@@ -646,15 +770,26 @@ main() {
     # Docker prüfen und installieren
     check_and_install_docker
 
-    # IP/Hostname konfigurieren falls gewünscht
+    # IP-Konfiguration anwenden falls gewünscht
     if [ "$CONFIGURE_IP" = true ]; then
-        echo -e "\n${yellow}IP-Konfiguration wird noch nicht vollständig unterstützt.${nc}"
-        echo -e "${yellow}Bitte konfigurieren Sie die IP manuell oder verwenden Sie netplan/nmcli.${nc}\n"
+        echo -e "\n${cyan}Wende IP-Konfiguration an...${nc}"
+        if apply_network_config "$INTERFACE" "$NEW_IP/$NEW_CIDR" "$NEW_GATEWAY" "$NEW_DNS"; then
+            echo -e "${green}✓ IP-Konfiguration erfolgreich angewendet${nc}"
+            echo -e "${yellow}Hinweis: Möglicherweise wurde die SSH-Verbindung getrennt.${nc}"
+            echo -e "${yellow}Neue IP-Adresse: $NEW_IP${nc}\n"
+        else
+            echo -e "${red}✗ Fehler bei der IP-Konfiguration${nc}"
+            if ! confirm "Trotzdem fortfahren?" "n"; then
+                exit 1
+            fi
+        fi
     fi
 
+    # Hostname ändern falls gewünscht
     if [ "$CONFIGURE_HOSTNAME" = true ]; then
         echo -e "\n${cyan}Setze Hostnamen auf: $NEW_HOSTNAME${nc}"
         sudo hostnamectl set-hostname "$NEW_HOSTNAME"
+        echo "127.0.1.1 $NEW_HOSTNAME" | sudo tee -a /etc/hosts > /dev/null
         echo -e "${green}✓ Hostname geändert${nc}\n"
     fi
 
