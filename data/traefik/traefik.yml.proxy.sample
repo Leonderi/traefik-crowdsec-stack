@@ -12,14 +12,11 @@ entryPoints:
     address: ':88'
   web:
     address: ':80'
-    # Kein automatisches Redirect zu HTTPS - wird vom vorgeschalteten Traefik übernommen
-  websecure:
-    address: ':443'
     http:
       middlewares:
         - default@file
         - traefik-bouncer@file
-      tls: {}  # TLS aktiviert, aber ohne Certificate Resolver
+    # Kommunikation erfolgt nur über HTTP - vorgeschalteter Traefik übernimmt HTTPS
 
 ping:
   entryPoint: "ping"

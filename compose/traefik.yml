@@ -14,7 +14,7 @@ services:
       interval: 10s
       retries: 3
       start_period: 10s
-    image: ${SERVICES_TRAEFIK_IMAGE:-traefik}:${SERVICES_TRAEFIK_IMAGE_VERSION:-3.3}
+    image: ${SERVICES_TRAEFIK_IMAGE:-traefik}:${SERVICES_TRAEFIK_IMAGE_VERSION:-3.6}
     labels:
       traefik.enable: "true"
       traefik.http.routers.traefik-dashboard.entrypoints: websecure

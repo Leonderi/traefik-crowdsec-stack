@@ -14,19 +14,17 @@ services:
       interval: 10s
       retries: 3
       start_period: 10s
-    image: ${SERVICES_TRAEFIK_IMAGE:-traefik}:${SERVICES_TRAEFIK_IMAGE_VERSION:-3.3}
+    image: ${SERVICES_TRAEFIK_IMAGE:-traefik}:${SERVICES_TRAEFIK_IMAGE_VERSION:-3.6}
     labels:
       traefik.enable: "true"
-      traefik.http.routers.traefik-dashboard.entrypoints: websecure
+      traefik.http.routers.traefik-dashboard.entrypoints: web
       traefik.http.routers.traefik-dashboard.middlewares: traefik-dashboard-auth@file
       traefik.http.routers.traefik-dashboard.rule: ${SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST:-HOST(`traefik.yourdomain.com`)}
       traefik.http.routers.traefik-dashboard.service: api@internal
-      traefik.http.routers.traefik-dashboard.tls: "true"
       traefik.http.services.traefik-dashboard.loadbalancer.sticky.cookie.httpOnly: "true"
-      traefik.http.services.traefik-dashboard.loadbalancer.sticky.cookie.secure: "true"
       traefik.http.routers.pingweb.rule: PathPrefix(`/ping`)
       traefik.http.routers.pingweb.service: ping@internal
-      traefik.http.routers.pingweb.entrypoints: websecure
+      traefik.http.routers.pingweb.entrypoints: web
     networks:
       crowdsec:
         ipv4_address: ${SERVICES_TRAEFIK_NETWORKS_CROWDSEC_IPV4:-172.31.127.253}
@@ -37,8 +35,13 @@ services:
       socket_proxy:
         ipv4_address: ${SERVICES_TRAEFIK_NETWORKS_SOCKET_PROXY_IPV4:-172.31.255.253}
         ipv6_address: ${SERVICES_TRAEFIK_NETWORKS_SOCKET_PROXY_IPV6:-fd00:1:be:a:7001:0:3e:8ffe}
-    # Keine exponierten Ports - Kommunikation erfolgt über das Proxy-Netzwerk
-    # Der vorgeschaltete Traefik verbindet sich über das Proxy-Netzwerk
+    # Port 80 exponiert für Kommunikation mit vorgeschaltetem Traefik
+    # Port 443 wird nicht benötigt, da vorgeschalteter Traefik HTTPS übernimmt
+    ports:
+      - mode: host
+        target: 80
+        published: "80"
+        protocol: tcp
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

@@ -40,27 +40,33 @@ Das Skript wird Sie nach dem gewünschten Installationsmodus fragen.
 
 Wenn Sie die Installation mit vorgeschaltetem Traefik-Proxy wählen:
 
-- Die Ports 80 und 443 werden **nicht** exponiert
+- **Port 80** wird exponiert (für HTTP-Kommunikation mit vorgeschaltetem Traefik)
+- **Port 443** wird **nicht** benötigt (vorgeschalteter Traefik übernimmt HTTPS)
 - Die E-Mail-Abfrage für SSL-Zertifikate wird übersprungen
-- Die Kommunikation erfolgt über das interne Proxy-Netzwerk
-- Der vorgeschaltete Traefik muss sich mit diesem Traefik über das Proxy-Netzwerk verbinden
+- Die Kommunikation zwischen den Traefiks erfolgt über **HTTP** im VM-Netzwerk
+- Ihre Backend-VM sollte eine IP wie **172.16.16.140** (oder fortlaufend) haben
 
 **Ausführliche Anleitung**: Eine detaillierte Anleitung zur Konfiguration des vorgeschalteten Traefik finden Sie in der [README-PROXY.md](README-PROXY.md).
 
-**Kurzübersicht - Konfiguration des vorgeschalteten Traefik:**
-
-Fügen Sie in Ihrem vorgeschalteten Traefik eine Service-Konfiguration hinzu, die auf den Backend-Traefik verweist:
-
-```yaml
-http:
-  services:
-    backend-traefik:
-      loadBalancer:
-        servers:
-          - url: "http://172.31.191.254:80"
+**Wichtig - Architektur:**
+```
+Internet → Vorgeschalteter Traefik (HTTPS) → Backend-Traefik VM (HTTP, Port 80) → Services
 ```
 
-Die IP-Adresse `172.31.191.254` ist die Standard-IP des Backend-Traefik im Proxy-Netzwerk. Diese kann in der `.env`-Datei über `SERVICES_TRAEFIK_NETWORKS_PROXY_IPV4` angepasst werden.
+**Kurzübersicht - Konfiguration des vorgeschalteten Traefik:**
+
+Der vorgeschaltete Traefik verwendet den **HTTP Provider** für automatische Service-Discovery:
+
+```yaml
+providers:
+  http:
+    endpoints:
+      - "http://172.16.16.140/api"  # Ihre Backend-VM IP
+      - "http://172.16.16.141/api"  # Weitere Backend-VMs
+    pollInterval: "10s"
+```
+
+Services auf Ihren Backend-VMs definieren ihre Domains/Subdomains in den Docker Compose Labels und werden automatisch vom vorgeschalteten Traefik erkannt.
 
 ## Manuelle Anleitung
 ![Ubuntu 20.04 - Testing](https://img.shields.io/badge/Ubuntu_20.04-07--10--2024-orange?logo=ubuntu)
@@ -260,7 +266,14 @@ Der `BOUNCER_KEY_FIREWALL` sollte der Wert sein, den Sie generiert haben (in Sch
 
 **Standard-Installation**: Stellen Sie sicher, dass die Firewall die Ports 80 (HTTP) und 443 (HTTPS) freigibt.
 
-**Installation mit vorgeschaltetem Traefik-Proxy**: Die Ports 80 und 443 müssen **nicht** freigegeben werden, da die Kommunikation intern über das Proxy-Netzwerk erfolgt.
+**Installation mit vorgeschaltetem Traefik-Proxy**:
+- Port 80 muss für die Kommunikation mit dem vorgeschalteten Traefik freigegeben werden
+- Port 443 wird **nicht** benötigt (vorgeschalteter Traefik übernimmt HTTPS)
+
+```bash
+# Für Proxy-Modus: Nur Port 80 öffnen
+ufw allow 80/tcp
+```
 
 ### 10. Domain überprüfen
 
