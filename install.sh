@@ -32,8 +32,8 @@ show_banner() {
 ║              Traefik-CrowdSec-Stack Installer                        ║
 ║                                                                      ║
 ║  Automatische Installation von:                                     ║
-║  • Frontend Traefik (vorgeschalteter Proxy)                          ║
-║  • Backend Stack (Traefik + CrowdSec + Bouncer)                      ║
+║  • Frontend Traefik (vorgeschalteter Proxy)                         ║
+║  • Backend Stack (Traefik + CrowdSec + Bouncer)                     ║
 ║                                                                      ║
 ╚══════════════════════════════════════════════════════════════════════╝
 EOF
@@ -423,11 +423,206 @@ install_backend_stack() {
     step_done "Dateien kopiert und Rechte gesetzt"
     ((current_step++))
 
-    # Weitere Schritte aus first_install.sh folgen...
-    # (CrowdSec, Bouncer-Keys, E-Mail, Domain, Firewall, etc.)
+    # CrowdSec-Repository
+    show_step $current_step $total_steps "Überprüfung: CrowdSec-Repository"
+    if confirm "Ist das CrowdSec-Repository bereits in deinen Paketquellen vorhanden?" "n"; then
+        echo "Das CrowdSec-Repository ist bereits vorhanden. Installation wird übersprungen."
+    else
+        echo "Das CrowdSec-Repository wird installiert..."
+        curl -s https://install.crowdsec.net | sudo sh
+        echo "CrowdSec-Repository erfolgreich installiert."
+    fi
+    step_done "CrowdSec-Repository überprüft und ggf. installiert"
+    ((current_step++))
 
-    echo -e "\n${yellow}Hinweis: Dies ist eine gekürzte Version. Die vollständige Backend-Installation wird in der finalen Version implementiert.${nc}"
-    echo -e "${cyan}Für jetzt verweisen wir auf das bestehende first_install.sh${nc}\n"
+    # OpenSSL installieren
+    show_step $current_step $total_steps "Überprüfen von OpenSSL"
+    command -v openssl >/dev/null 2>&1 || { sudo apt update && sudo apt install -y openssl; }
+    step_done "OpenSSL überprüft"
+    ((current_step++))
+
+    # Bouncer-Passwörter generieren
+    show_step $current_step $total_steps "Generiere Bouncer-Passwörter"
+    BOUNCER_KEY_TRAEFIK_PASSWORD=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9!@#$%^&*()-_=+[]{}<>?|')
+    echo -e "\nBOUNCER_KEY_TRAEFIK=$BOUNCER_KEY_TRAEFIK_PASSWORD" >> ${SCRIPT_DIR}/.env
+    sleep 1
+    BOUNCER_KEY_FIREWALL_PASSWORD=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9!@#$%^&*()-_=+[]{}<>?|')
+    echo "BOUNCER_KEY_FIREWALL=$BOUNCER_KEY_FIREWALL_PASSWORD" >> ${SCRIPT_DIR}/.env
+    step_done "Bouncer-Passwörter generiert"
+    ((current_step++))
+
+    # E-Mail-Adresse für SSL-Zertifikate (nur im Standard-Modus)
+    if [ "$use_proxy_mode" = false ]; then
+        show_step $current_step $total_steps "Frage nach E-Mail-Adresse für SSL-Zertifikate"
+
+        # Funktion zur E-Mail-Validierung
+        validate_email() {
+            local email_regex="^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+            [[ $1 =~ $email_regex ]]
+        }
+
+        # Benutzer nach E-Mail-Adresse fragen
+        while true; do
+            read -p "Bitte gib deine E-Mail-Adresse für die SSL-Zertifikate ein: " ssl_email
+            if validate_email "$ssl_email"; then
+                echo -e "${green}Gültige E-Mail-Adresse: $ssl_email${nc}"
+                if confirm "Möchtest du diese E-Mail-Adresse verwenden? ($ssl_email)" "y"; then
+                    break
+                fi
+            else
+                echo -e "${red}Ungültige E-Mail-Adresse. Bitte versuche es erneut.${nc}"
+            fi
+        done
+
+        # E-Mail-Adresse in traefik.yml setzen
+        traefik_config_file="data/traefik/traefik.yml"
+        if [ ! -f "$traefik_config_file" ]; then
+            error_exit "Die Datei $traefik_config_file existiert nicht."
+        fi
+        sed -i "s/email: \".*\"/email: \"$ssl_email\"/g" "$traefik_config_file"
+
+        step_done "SSL-Zertifikat E-Mail-Adresse gesetzt"
+        ((current_step++))
+    else
+        show_step $current_step $total_steps "Überspringe SSL-Zertifikat E-Mail (Proxy-Modus)"
+        echo "Im Proxy-Modus übernimmt der vorgeschaltete Traefik das Zertifikats-Handling."
+        step_done "SSL-Zertifikat E-Mail übersprungen (Proxy-Modus)"
+        ((current_step++))
+    fi
+
+    # Wunsch-Domain für Traefik-Dashboard
+    show_step $current_step $total_steps "Frage nach Wunsch-Domain für Traefik-Dashboard"
+
+    env_file="${SCRIPT_DIR}/.env"
+    if [ ! -f "$env_file" ]; then
+        error_exit "Die Datei $env_file existiert nicht."
+    fi
+
+    # Funktion zur Domain-Validierung
+    validate_domain() {
+        local domain_regex="^([a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}$"
+        [[ $1 =~ $domain_regex ]]
+    }
+
+    # Benutzer nach Domain fragen
+    while true; do
+        read -p "Bitte gib die Wunsch-Domain für dein Traefik-Dashboard ein (ohne http/https und ohne '/'): " dashboard_domain
+        dashboard_domain=$(echo "$dashboard_domain" | sed -e 's|^http[s]\?://||' -e 's|/$||')
+
+        if validate_domain "$dashboard_domain"; then
+            if confirm "Möchtest du diese Domain verwenden? ($dashboard_domain)" "y"; then
+                break
+            fi
+        else
+            echo -e "${red}Ungültiges Domain-Format. Bitte versuche es erneut.${nc}"
+        fi
+    done
+
+    sed -i "s/SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=.*/SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=HOST(\`$dashboard_domain\`)/" "$env_file"
+    step_done "Traefik-Domain gesetzt"
+    ((current_step++))
+
+    # CrowdSec einmalig starten
+    show_step $current_step $total_steps "CrowdSec einmalig starten und herunterfahren"
+    docker compose up crowdsec -d && docker compose down
+    step_done "CrowdSec gestartet und heruntergefahren"
+    ((current_step++))
+
+    # CrowdSec Konfiguration
+    show_step $current_step $total_steps "CrowdSec Konfiguration anpassen"
+    acquis_file="${SCRIPT_DIR}/data/crowdsec/config/acquis.yaml"
+    if [ ! -f "$acquis_file" ]; then
+        error_exit "Die Datei $acquis_file existiert nicht."
+    fi
+
+    cat <<EOL > "$acquis_file"
+filenames:
+  - /var/log/auth.log
+  - /var/log/syslog
+labels:
+  type: syslog
+---
+filenames:
+  - /var/log/traefik/access.log
+labels:
+  type: traefik
+---
+EOL
+
+    step_done "acquis.yaml bearbeitet"
+    ((current_step++))
+
+    # Firewall-Auswahl
+    show_step $current_step $total_steps "Firewall-Bouncer installieren"
+    echo -e "${cyan}Welche Firewall verwendest du?${nc}"
+    echo "1) UFW"
+    echo "2) iptables"
+    echo "3) nftables"
+    read -p "Bitte wähle die Nummer deiner Firewall (1-3): " firewall_choice
+
+    case $firewall_choice in
+        1|2)
+            echo "Installiere crowdsec-firewall-bouncer-iptables..."
+            sudo apt install -y crowdsec-firewall-bouncer-iptables
+            ;;
+        3)
+            echo "Installiere crowdsec-firewall-bouncer-nftables..."
+            sudo apt install -y crowdsec-firewall-bouncer-nftables
+            ;;
+        *)
+            error_exit "Ungültige Auswahl."
+            ;;
+    esac
+    step_done "Firewall-Bouncer installiert"
+    ((current_step++))
+
+    # Firewall-Bouncer konfigurieren
+    show_step $current_step $total_steps "Firewall-Bouncer Konfiguration anpassen"
+    firewall_bouncer_config="/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml"
+    if [ ! -f "$firewall_bouncer_config" ]; then
+        error_exit "Die Datei $firewall_bouncer_config existiert nicht."
+    fi
+
+    sudo sed -i "s#api_url: .*#api_url: http://172.31.127.254:8080/#g" "$firewall_bouncer_config"
+    sudo sed -i "s#api_key: .*#api_key: $BOUNCER_KEY_FIREWALL_PASSWORD#g" "$firewall_bouncer_config"
+    sudo systemctl enable crowdsec-firewall-bouncer
+    sudo systemctl restart crowdsec-firewall-bouncer
+    step_done "Firewall-Bouncer angepasst"
+    ((current_step++))
+
+    # Dashboard-Benutzer erstellen
+    show_step $current_step $total_steps "Erstelle Benutzer für Traefik-Dashboard"
+    read -p "Bitte gib den gewünschten Benutzernamen für das Dashboard ein: " dashboard_user
+    htpasswd_file="${SCRIPT_DIR}/data/traefik/.htpasswd"
+    sudo htpasswd -c "$htpasswd_file" "$dashboard_user"
+    step_done "Dashboard-Benutzer erstellt"
+    ((current_step++))
+
+    # Stack starten
+    show_step $current_step $total_steps "Finale Überprüfung und Stack starten"
+    if confirm "Hast du die Ports und die Domain überprüft und sind sie korrekt?" "n"; then
+        echo "Starte den Stack..."
+        docker compose up -d
+        step_done "Stack gestartet"
+
+        echo -e "\n${green}${bold}Installation abgeschlossen!${nc}\n"
+        echo -e "${cyan}Dashboard erreichbar unter:${nc} https://$dashboard_domain"
+        echo -e "${cyan}Benutzername:${nc} $dashboard_user"
+        echo -e "\n${yellow}Wichtige nächste Schritte:${nc}"
+        echo -e "1. Stelle sicher, dass die Domain auf die Server-IP zeigt"
+        echo -e "2. Öffne die Firewall-Ports:"
+        if [ "$use_proxy_mode" = true ]; then
+            echo -e "   - Port 80 (HTTP für vorgeschalteten Traefik)"
+        else
+            echo -e "   - Port 80 (HTTP)"
+            echo -e "   - Port 443 (HTTPS)"
+        fi
+        echo -e "3. Warte ca. 1-2 Minuten bis alle Services bereit sind"
+    else
+        step_done "Start übersprungen"
+        echo -e "\n${yellow}Bitte überprüfe die Firewall und die Domain-Einstellungen.${nc}"
+        echo -e "${cyan}Du kannst den Stack später mit 'docker compose up -d' starten${nc}"
+    fi
 }
 
 # =============================================================================
