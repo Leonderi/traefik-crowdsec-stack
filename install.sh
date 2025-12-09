@@ -358,8 +358,7 @@ install_frontend_traefik() {
     # Arbeitsverzeichnis setzen
     show_step $current_step $total_steps "Setze Arbeitsverzeichnis"
     SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-    FRONTEND_DIR="${SCRIPT_DIR}/frontend"
-    cd "$FRONTEND_DIR" || error_exit "Frontend-Verzeichnis nicht gefunden"
+    cd "$SCRIPT_DIR" || error_exit "Root-Verzeichnis nicht gefunden"
     step_done "Arbeitsverzeichnis gesetzt"
     ((current_step++))
 
@@ -377,24 +376,24 @@ install_frontend_traefik() {
     EXISTING_DASHBOARD_USER=""
     EXISTING_BACKEND_IPS=()
 
-    if [ -f ".env" ]; then
+    if [ -f "frontend/.env" ]; then
         EXISTING_CONFIG=true
-        EXISTING_EMAIL=$(grep "^ACME_EMAIL=" .env 2>/dev/null | cut -d'=' -f2)
-        EXISTING_DASHBOARD_HOST=$(grep "^TRAEFIK_DASHBOARD_HOST=" .env 2>/dev/null | cut -d'=' -f2)
+        EXISTING_EMAIL=$(grep "^ACME_EMAIL=" frontend/.env 2>/dev/null | cut -d'=' -f2)
+        EXISTING_DASHBOARD_HOST=$(grep "^TRAEFIK_DASHBOARD_HOST=" frontend/.env 2>/dev/null | cut -d'=' -f2)
         echo -e "${yellow}Bestehende Konfiguration gefunden!${nc}"
     fi
 
-    if [ -f "docker-compose.yml" ]; then
+    if [ -f "frontend/traefik.yml" ]; then
         # Dashboard-Benutzer auslesen (erster Benutzer aus basicauth)
-        EXISTING_DASHBOARD_USER=$(grep -oP 'basicauth.users:.*"\K[^:]+' docker-compose.yml 2>/dev/null | head -n1)
+        EXISTING_DASHBOARD_USER=$(grep -oP 'basicauth.users:.*"\K[^:]+' frontend/traefik.yml 2>/dev/null | head -n1)
         if [ -n "$EXISTING_DASHBOARD_USER" ]; then
             echo -e "${cyan}Gefundener Dashboard-Benutzer: $EXISTING_DASHBOARD_USER${nc}"
         fi
     fi
 
-    if [ -f "traefik.yml" ]; then
-        # Backend IPs aus traefik.yml auslesen
-        EXISTING_BACKEND_IPS=($(grep -oP 'http://\K[0-9.]+(?=/api)' traefik.yml 2>/dev/null))
+    if [ -f "frontend/config/traefik.yml" ]; then
+        # Backend IPs aus traefik config auslesen
+        EXISTING_BACKEND_IPS=($(grep -oP 'http://\K[0-9.]+(?=/api)' frontend/config/traefik.yml 2>/dev/null))
         if [ ${#EXISTING_BACKEND_IPS[@]} -gt 0 ]; then
             echo -e "${cyan}Gefundene Backend-VMs: ${EXISTING_BACKEND_IPS[*]}${nc}"
         fi
@@ -407,17 +406,18 @@ install_frontend_traefik() {
     show_step $current_step $total_steps "Bereite Konfigurationsdateien vor"
 
     # Verzeichnisse erstellen falls nicht vorhanden
-    mkdir -p config logs letsencrypt
+    mkdir -p frontend/config frontend/logs frontend/letsencrypt
 
     # Nur kopieren wenn nicht vorhanden, sonst behalten
-    [ ! -f ".env" ] && cp .env.sample .env
-    [ ! -f "traefik.yml" ] && cp traefik.yml.sample traefik.yml
-    [ ! -f "docker-compose.yml" ] && cp docker-compose.yml.sample docker-compose.yml
-    [ ! -f "letsencrypt/acme.json" ] && cp letsencrypt/acme.json.sample letsencrypt/acme.json
-    chmod 600 letsencrypt/acme.json
+    [ ! -f "frontend/.env" ] && cp frontend/.env.sample frontend/.env
+    [ ! -f "frontend/traefik.yml" ] && cp frontend/traefik.yml.sample frontend/traefik.yml
+    [ ! -f "frontend/config/traefik.yml" ] && cp frontend/config/traefik.yml.sample frontend/config/traefik.yml
+    [ ! -f "frontend/letsencrypt/acme.json" ] && cp frontend/letsencrypt/acme.json.sample frontend/letsencrypt/acme.json
+    chmod 600 frontend/letsencrypt/acme.json
 
     # ABSOLUTE_PATH korrekt setzen (immer aktualisieren)
-    sed -i "s|ABSOLUTE_PATH=.*|ABSOLUTE_PATH=$PWD|g" .env
+    FRONTEND_PATH="$SCRIPT_DIR/frontend"
+    sed -i "s|ABSOLUTE_PATH=.*|ABSOLUTE_PATH=$FRONTEND_PATH|g" frontend/.env
 
     step_done "Konfigurationsdateien vorbereitet"
     ((current_step++))
@@ -430,8 +430,8 @@ install_frontend_traefik() {
     else
         read -p "Bitte geben Sie Ihre E-Mail-Adresse für Let's Encrypt ein: " ACME_EMAIL
     fi
-    sed -i "s/email: \".*\"/email: \"$ACME_EMAIL\"/g" traefik.yml
-    sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$ACME_EMAIL/g" .env
+    sed -i "s/email: \".*\"/email: \"$ACME_EMAIL\"/g" frontend/config/traefik.yml
+    sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$ACME_EMAIL/g" frontend/.env
     step_done "Let's Encrypt konfiguriert"
     ((current_step++))
 
@@ -443,7 +443,7 @@ install_frontend_traefik() {
     else
         read -p "Bitte geben Sie die Domain für das Traefik-Dashboard ein: " DASHBOARD_HOST
     fi
-    sed -i "s/TRAEFIK_DASHBOARD_HOST=.*/TRAEFIK_DASHBOARD_HOST=$DASHBOARD_HOST/g" .env
+    sed -i "s/TRAEFIK_DASHBOARD_HOST=.*/TRAEFIK_DASHBOARD_HOST=$DASHBOARD_HOST/g" frontend/.env
     step_done "Dashboard-Domain konfiguriert"
     ((current_step++))
 
@@ -484,10 +484,10 @@ install_frontend_traefik() {
                 ENDPOINTS="$ENDPOINTS\n      - \"http://$ip/api\""
             fi
         done
-        sed -i "/endpoints: \[\]/c\    endpoints:\n$ENDPOINTS" traefik.yml
+        sed -i "/endpoints: \[\]/c\    endpoints:\n$ENDPOINTS" frontend/config/traefik.yml
         echo -e "${green}${#BACKEND_IPS[@]} Backend-VM(s) konfiguriert${nc}"
     else
-        echo -e "${yellow}Keine Backend-VMs konfiguriert. Sie können diese später in traefik.yml hinzufügen.${nc}"
+        echo -e "${yellow}Keine Backend-VMs konfiguriert. Sie können diese später in frontend/config/traefik.yml hinzufügen.${nc}"
     fi
     step_done "Backend-VMs konfiguriert"
     ((current_step++))
@@ -510,13 +510,13 @@ install_frontend_traefik() {
         else
             DASHBOARD_PASS=$(htpasswd -nb "$DASHBOARD_USER" "$(read -sp 'Neues Passwort: ' pwd; echo $pwd)" | sed 's/\$/\$\$/g')
             echo
-            sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" docker-compose.yml
+            sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" frontend/traefik.yml
             echo -e "${green}Neues Passwort gesetzt${nc}"
         fi
     else
         DASHBOARD_PASS=$(htpasswd -nb "$DASHBOARD_USER" "$(read -sp 'Passwort: ' pwd; echo $pwd)" | sed 's/\$/\$\$/g')
         echo
-        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" docker-compose.yml
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" frontend/traefik.yml
         echo -e "${green}Dashboard-Authentifizierung erstellt${nc}"
     fi
 
@@ -543,15 +543,20 @@ install_frontend_traefik() {
     # Stack starten
     show_step $current_step $total_steps "Starte Frontend Traefik"
     if confirm "Möchten Sie den Frontend Traefik jetzt starten?" "y"; then
-        docker compose up -d
+        docker compose -f docker-compose.frontend.yml up -d
         step_done "Frontend Traefik gestartet"
 
         echo -e "\n${green}${bold}Installation abgeschlossen!${nc}\n"
         echo -e "${cyan}Dashboard erreichbar unter:${nc} https://$DASHBOARD_HOST"
         echo -e "${cyan}Benutzername:${nc} $DASHBOARD_USER"
+        echo -e "\n${cyan}Zum Verwalten des Stacks:${nc}"
+        echo -e "  Start:   docker compose -f docker-compose.frontend.yml up -d"
+        echo -e "  Stop:    docker compose -f docker-compose.frontend.yml down"
+        echo -e "  Logs:    docker compose -f docker-compose.frontend.yml logs -f"
     else
         step_done "Start übersprungen"
-        echo -e "\n${yellow}Sie können den Stack später mit 'docker compose up -d' starten${nc}"
+        echo -e "\n${yellow}Sie können den Stack später mit diesem Befehl starten:${nc}"
+        echo -e "  docker compose -f docker-compose.frontend.yml up -d"
     fi
 }
 
