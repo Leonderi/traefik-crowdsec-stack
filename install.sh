@@ -369,27 +369,67 @@ install_frontend_traefik() {
     step_done "apache2-utils installiert"
     ((current_step++))
 
-    # Konfigurationsdateien kopieren
-    show_step $current_step $total_steps "Kopiere Konfigurationsdateien"
+    # Bestehende Konfiguration prüfen
+    show_step $current_step $total_steps "Prüfe bestehende Konfiguration"
+    EXISTING_CONFIG=false
+    EXISTING_EMAIL=""
+    EXISTING_DASHBOARD_HOST=""
+    EXISTING_DASHBOARD_USER=""
+    EXISTING_BACKEND_IPS=()
+
+    if [ -f ".env" ]; then
+        EXISTING_CONFIG=true
+        EXISTING_EMAIL=$(grep "^ACME_EMAIL=" .env 2>/dev/null | cut -d'=' -f2)
+        EXISTING_DASHBOARD_HOST=$(grep "^TRAEFIK_DASHBOARD_HOST=" .env 2>/dev/null | cut -d'=' -f2)
+        echo -e "${yellow}Bestehende Konfiguration gefunden!${nc}"
+    fi
+
+    if [ -f "docker-compose.yml" ]; then
+        # Dashboard-Benutzer auslesen (erster Benutzer aus basicauth)
+        EXISTING_DASHBOARD_USER=$(grep -oP 'basicauth.users:.*"\K[^:]+' docker-compose.yml 2>/dev/null | head -n1)
+        if [ -n "$EXISTING_DASHBOARD_USER" ]; then
+            echo -e "${cyan}Gefundener Dashboard-Benutzer: $EXISTING_DASHBOARD_USER${nc}"
+        fi
+    fi
+
+    if [ -f "traefik.yml" ]; then
+        # Backend IPs aus traefik.yml auslesen
+        EXISTING_BACKEND_IPS=($(grep -oP 'http://\K[0-9.]+(?=/api)' traefik.yml 2>/dev/null))
+        if [ ${#EXISTING_BACKEND_IPS[@]} -gt 0 ]; then
+            echo -e "${cyan}Gefundene Backend-VMs: ${EXISTING_BACKEND_IPS[*]}${nc}"
+        fi
+    fi
+
+    step_done "Konfiguration geprüft"
+    ((current_step++))
+
+    # Konfigurationsdateien kopieren/aktualisieren
+    show_step $current_step $total_steps "Bereite Konfigurationsdateien vor"
 
     # Verzeichnisse erstellen falls nicht vorhanden
     mkdir -p config logs letsencrypt
 
-    cp .env.sample .env
-    cp traefik.yml.sample traefik.yml
-    cp docker-compose.yml.sample docker-compose.yml
-    cp letsencrypt/acme.json.sample letsencrypt/acme.json
+    # Nur kopieren wenn nicht vorhanden, sonst behalten
+    [ ! -f ".env" ] && cp .env.sample .env
+    [ ! -f "traefik.yml" ] && cp traefik.yml.sample traefik.yml
+    [ ! -f "docker-compose.yml" ] && cp docker-compose.yml.sample docker-compose.yml
+    [ ! -f "letsencrypt/acme.json" ] && cp letsencrypt/acme.json.sample letsencrypt/acme.json
     chmod 600 letsencrypt/acme.json
 
-    # ABSOLUTE_PATH korrekt setzen
+    # ABSOLUTE_PATH korrekt setzen (immer aktualisieren)
     sed -i "s|ABSOLUTE_PATH=.*|ABSOLUTE_PATH=$PWD|g" .env
 
-    step_done "Konfigurationsdateien kopiert"
+    step_done "Konfigurationsdateien vorbereitet"
     ((current_step++))
 
     # E-Mail für Let's Encrypt
     show_step $current_step $total_steps "Konfiguriere Let's Encrypt"
-    read -p "Bitte geben Sie Ihre E-Mail-Adresse für Let's Encrypt ein: " ACME_EMAIL
+    if [ -n "$EXISTING_EMAIL" ] && [ "$EXISTING_EMAIL" != "your@email.com" ]; then
+        read -p "E-Mail-Adresse für Let's Encrypt [$EXISTING_EMAIL]: " ACME_EMAIL
+        ACME_EMAIL=${ACME_EMAIL:-$EXISTING_EMAIL}
+    else
+        read -p "Bitte geben Sie Ihre E-Mail-Adresse für Let's Encrypt ein: " ACME_EMAIL
+    fi
     sed -i "s/email: \".*\"/email: \"$ACME_EMAIL\"/g" traefik.yml
     sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$ACME_EMAIL/g" .env
     step_done "Let's Encrypt konfiguriert"
@@ -397,20 +437,42 @@ install_frontend_traefik() {
 
     # Dashboard-Domain
     show_step $current_step $total_steps "Konfiguriere Dashboard-Domain"
-    read -p "Bitte geben Sie die Domain für das Traefik-Dashboard ein: " DASHBOARD_HOST
+    if [ -n "$EXISTING_DASHBOARD_HOST" ] && [ "$EXISTING_DASHBOARD_HOST" != "traefik.yourdomain.com" ]; then
+        read -p "Domain für das Traefik-Dashboard [$EXISTING_DASHBOARD_HOST]: " DASHBOARD_HOST
+        DASHBOARD_HOST=${DASHBOARD_HOST:-$EXISTING_DASHBOARD_HOST}
+    else
+        read -p "Bitte geben Sie die Domain für das Traefik-Dashboard ein: " DASHBOARD_HOST
+    fi
     sed -i "s/TRAEFIK_DASHBOARD_HOST=.*/TRAEFIK_DASHBOARD_HOST=$DASHBOARD_HOST/g" .env
     step_done "Dashboard-Domain konfiguriert"
     ((current_step++))
 
     # Backend-VMs konfigurieren
     show_step $current_step $total_steps "Konfiguriere Backend-VMs"
-    echo -e "${cyan}Geben Sie die IP-Adressen Ihrer Backend-VMs ein (eine pro Zeile, leere Zeile zum Beenden):${nc}"
     BACKEND_IPS=()
-    while true; do
-        read -p "Backend-VM IP $(( ${#BACKEND_IPS[@]} + 1 )) (Enter zum Beenden): " BACKEND_IP
-        [ -z "$BACKEND_IP" ] && break
-        BACKEND_IPS+=("$BACKEND_IP")
-    done
+
+    # Bestehende Backend-VMs anbieten
+    if [ ${#EXISTING_BACKEND_IPS[@]} -gt 0 ]; then
+        echo -e "${yellow}Bestehende Backend-VMs gefunden: ${EXISTING_BACKEND_IPS[*]}${nc}"
+        if confirm "Möchten Sie die bestehenden Backend-VMs beibehalten?" "y"; then
+            BACKEND_IPS=("${EXISTING_BACKEND_IPS[@]}")
+            echo -e "${green}Bestehende Backend-VMs übernommen${nc}"
+        else
+            echo -e "${cyan}Geben Sie die IP-Adressen Ihrer Backend-VMs ein (eine pro Zeile, leere Zeile zum Beenden):${nc}"
+            while true; do
+                read -p "Backend-VM IP $(( ${#BACKEND_IPS[@]} + 1 )) (Enter zum Beenden): " BACKEND_IP
+                [ -z "$BACKEND_IP" ] && break
+                BACKEND_IPS+=("$BACKEND_IP")
+            done
+        fi
+    else
+        echo -e "${cyan}Geben Sie die IP-Adressen Ihrer Backend-VMs ein (eine pro Zeile, leere Zeile zum Beenden):${nc}"
+        while true; do
+            read -p "Backend-VM IP $(( ${#BACKEND_IPS[@]} + 1 )) (Enter zum Beenden): " BACKEND_IP
+            [ -z "$BACKEND_IP" ] && break
+            BACKEND_IPS+=("$BACKEND_IP")
+        done
+    fi
 
     # HTTP Provider Endpoints generieren
     if [ ${#BACKEND_IPS[@]} -gt 0 ]; then
@@ -431,12 +493,34 @@ install_frontend_traefik() {
     ((current_step++))
 
     # Dashboard-Authentifizierung
-    show_step $current_step $total_steps "Erstelle Dashboard-Authentifizierung"
-    read -p "Bitte geben Sie den Benutzernamen für das Dashboard ein: " DASHBOARD_USER
-    DASHBOARD_PASS=$(htpasswd -nb "$DASHBOARD_USER" "$(read -sp 'Passwort: ' pwd; echo $pwd)" | sed 's/\$/\$\$/g')
-    echo
-    sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" docker-compose.yml
-    step_done "Dashboard-Authentifizierung erstellt"
+    show_step $current_step $total_steps "Konfiguriere Dashboard-Authentifizierung"
+
+    # Benutzername
+    if [ -n "$EXISTING_DASHBOARD_USER" ]; then
+        read -p "Dashboard-Benutzername [$EXISTING_DASHBOARD_USER]: " DASHBOARD_USER
+        DASHBOARD_USER=${DASHBOARD_USER:-$EXISTING_DASHBOARD_USER}
+    else
+        read -p "Bitte geben Sie den Benutzernamen für das Dashboard ein: " DASHBOARD_USER
+    fi
+
+    # Passwort - immer neu setzen oder bestehende Authentifizierung beibehalten
+    if [ -n "$EXISTING_DASHBOARD_USER" ] && [ "$DASHBOARD_USER" = "$EXISTING_DASHBOARD_USER" ]; then
+        if confirm "Möchten Sie das bestehende Passwort beibehalten?" "y"; then
+            echo -e "${green}Bestehende Authentifizierung wird beibehalten${nc}"
+        else
+            DASHBOARD_PASS=$(htpasswd -nb "$DASHBOARD_USER" "$(read -sp 'Neues Passwort: ' pwd; echo $pwd)" | sed 's/\$/\$\$/g')
+            echo
+            sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" docker-compose.yml
+            echo -e "${green}Neues Passwort gesetzt${nc}"
+        fi
+    else
+        DASHBOARD_PASS=$(htpasswd -nb "$DASHBOARD_USER" "$(read -sp 'Passwort: ' pwd; echo $pwd)" | sed 's/\$/\$\$/g')
+        echo
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" docker-compose.yml
+        echo -e "${green}Dashboard-Authentifizierung erstellt${nc}"
+    fi
+
+    step_done "Dashboard-Authentifizierung konfiguriert"
     ((current_step++))
 
     # Firewall konfigurieren
@@ -512,26 +596,58 @@ install_backend_stack() {
     step_done "apache2-utils installiert"
     ((current_step++))
 
+    # Bestehende Konfiguration prüfen
+    show_step $current_step $total_steps "Prüfe bestehende Konfiguration"
+    EXISTING_CONFIG=false
+    EXISTING_EMAIL=""
+    EXISTING_DASHBOARD_DOMAIN=""
+
+    if [ -f "data/traefik/traefik.yml" ]; then
+        EXISTING_CONFIG=true
+        EXISTING_EMAIL=$(grep -oP 'email:\s*"\K[^"]+' data/traefik/traefik.yml 2>/dev/null | head -n1)
+        echo -e "${yellow}Bestehende Traefik-Konfiguration gefunden!${nc}"
+        [ -n "$EXISTING_EMAIL" ] && echo -e "${cyan}E-Mail: $EXISTING_EMAIL${nc}"
+    fi
+
+    if [ -f "data/traefik/dynamic_conf/http.middlewares.traefik-dashboard-auth.yml" ]; then
+        EXISTING_DASHBOARD_DOMAIN=$(grep -oP 'Host\(`\K[^`]+' data/traefik/dynamic_conf/http.middlewares.traefik-dashboard-auth.yml 2>/dev/null | head -n1)
+        [ -n "$EXISTING_DASHBOARD_DOMAIN" ] && echo -e "${cyan}Dashboard-Domain: $EXISTING_DASHBOARD_DOMAIN${nc}"
+    fi
+
+    step_done "Konfiguration geprüft"
+    ((current_step++))
+
     # Überprüfen, ob Container laufen
     show_step $current_step $total_steps "Überprüfen von laufenden Containern"
     containers=("crowdsec" "socket-proxy" "traefik" "traefik_crowdsec_bouncer")
+    running_containers=false
     for container in "${containers[@]}"; do
         if [ "$(docker ps -q -f name=$container)" ]; then
-            error_exit "Der Docker-Container '$container' läuft bereits. Das Skript wird abgebrochen."
+            running_containers=true
+            echo -e "${yellow}Container '$container' läuft bereits${nc}"
         fi
     done
-    step_done "Keine laufenden Container gefunden"
+
+    if [ "$running_containers" = true ]; then
+        if ! confirm "Container laufen bereits. Möchten Sie trotzdem fortfahren? (Bestehende Container werden gestoppt)" "n"; then
+            error_exit "Installation abgebrochen"
+        fi
+        echo -e "${cyan}Stoppe laufende Container...${nc}"
+        docker compose down 2>/dev/null || true
+    fi
+
+    step_done "Container-Status überprüft"
     ((current_step++))
 
-    # Netzwerke überprüfen
+    # Netzwerke überprüfen (nur Warnung, kein Abbruch mehr)
     show_step $current_step $total_steps "Überprüfen von Netzwerken"
     networks=("proxy" "socket_proxy" "crowdsec")
     for network in "${networks[@]}"; do
         if [ "$(docker network ls -q -f name=^${network}$)" ]; then
-            error_exit "Das Docker-Netzwerk '$network' existiert bereits. Das Skript wird abgebrochen."
+            echo -e "${yellow}Netzwerk '$network' existiert bereits${nc}"
         fi
     done
-    step_done "Keine bestehenden Netzwerke gefunden"
+    step_done "Netzwerk-Status überprüft"
     ((current_step++))
 
     # Dateien kopieren
@@ -562,7 +678,7 @@ install_backend_stack() {
         files_to_copy+=("data/traefik/traefik.yml.sample data/traefik/traefik.yml")
     fi
 
-    # Dateien kopieren
+    # Dateien kopieren (nur wenn nicht vorhanden)
     for file_pair in "${files_to_copy[@]}"; do
         src=$(echo $file_pair | awk '{print $1}')
         dst=$(echo $file_pair | awk '{print $2}')
@@ -570,8 +686,11 @@ install_backend_stack() {
         src_path="${SCRIPT_DIR}/${src}"
         dst_path="${SCRIPT_DIR}/${dst}"
 
-        if [ -f "$src_path" ]; then
+        if [ -f "$dst_path" ]; then
+            echo -e "${yellow}Behalte bestehende Datei: ${dst}${nc}"
+        elif [ -f "$src_path" ]; then
             cp "$src_path" "$dst_path"
+            echo -e "${green}Kopiere neue Datei: ${dst}${nc}"
         else
             error_exit "Die Datei ${src_path} existiert nicht."
         fi
@@ -613,7 +732,7 @@ install_backend_stack() {
 
     # E-Mail-Adresse für SSL-Zertifikate (nur im Standard-Modus)
     if [ "$use_proxy_mode" = false ]; then
-        show_step $current_step $total_steps "Frage nach E-Mail-Adresse für SSL-Zertifikate"
+        show_step $current_step $total_steps "Konfiguriere E-Mail-Adresse für SSL-Zertifikate"
 
         # Funktion zur E-Mail-Validierung
         validate_email() {
@@ -621,16 +740,22 @@ install_backend_stack() {
             [[ $1 =~ $email_regex ]]
         }
 
-        # Benutzer nach E-Mail-Adresse fragen
+        # Benutzer nach E-Mail-Adresse fragen (mit Default wenn vorhanden)
+        ssl_email=""
         while true; do
-            read -p "Bitte gib deine E-Mail-Adresse für die SSL-Zertifikate ein: " ssl_email
+            if [ -n "$EXISTING_EMAIL" ] && [ "$EXISTING_EMAIL" != "your@email.com" ]; then
+                read -p "E-Mail-Adresse für SSL-Zertifikate [$EXISTING_EMAIL]: " input_email
+                ssl_email=${input_email:-$EXISTING_EMAIL}
+            else
+                read -p "Bitte gib deine E-Mail-Adresse für die SSL-Zertifikate ein: " ssl_email
+            fi
+
             if validate_email "$ssl_email"; then
                 echo -e "${green}Gültige E-Mail-Adresse: $ssl_email${nc}"
-                if confirm "Möchtest du diese E-Mail-Adresse verwenden? ($ssl_email)" "y"; then
-                    break
-                fi
+                break
             else
                 echo -e "${red}Ungültige E-Mail-Adresse. Bitte versuche es erneut.${nc}"
+                EXISTING_EMAIL=""  # Bei ungültiger Eingabe kein Default mehr anbieten
             fi
         done
 
@@ -651,7 +776,7 @@ install_backend_stack() {
     fi
 
     # Wunsch-Domain für Traefik-Dashboard
-    show_step $current_step $total_steps "Frage nach Wunsch-Domain für Traefik-Dashboard"
+    show_step $current_step $total_steps "Konfiguriere Wunsch-Domain für Traefik-Dashboard"
 
     env_file="${SCRIPT_DIR}/.env"
     if [ ! -f "$env_file" ]; then
@@ -664,17 +789,24 @@ install_backend_stack() {
         [[ $1 =~ $domain_regex ]]
     }
 
-    # Benutzer nach Domain fragen
+    # Benutzer nach Domain fragen (mit Default wenn vorhanden)
+    dashboard_domain=""
     while true; do
-        read -p "Bitte gib die Wunsch-Domain für dein Traefik-Dashboard ein (ohne http/https und ohne '/'): " dashboard_domain
+        if [ -n "$EXISTING_DASHBOARD_DOMAIN" ]; then
+            read -p "Dashboard-Domain (ohne http/https und ohne '/') [$EXISTING_DASHBOARD_DOMAIN]: " input_domain
+            dashboard_domain=${input_domain:-$EXISTING_DASHBOARD_DOMAIN}
+        else
+            read -p "Bitte gib die Wunsch-Domain für dein Traefik-Dashboard ein (ohne http/https und ohne '/'): " dashboard_domain
+        fi
+
         dashboard_domain=$(echo "$dashboard_domain" | sed -e 's|^http[s]\?://||' -e 's|/$||')
 
         if validate_domain "$dashboard_domain"; then
-            if confirm "Möchtest du diese Domain verwenden? ($dashboard_domain)" "y"; then
-                break
-            fi
+            echo -e "${green}Domain wird verwendet: $dashboard_domain${nc}"
+            break
         else
             echo -e "${red}Ungültiges Domain-Format. Bitte versuche es erneut.${nc}"
+            EXISTING_DASHBOARD_DOMAIN=""  # Bei ungültiger Eingabe kein Default mehr anbieten
         fi
     done
 
