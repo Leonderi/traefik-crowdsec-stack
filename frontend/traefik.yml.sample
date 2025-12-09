@@ -12,6 +12,7 @@ services:
       - ../data/traefik-frontend/.env
     volumes:
       - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ../data/traefik-frontend/config/traefik.yml:/etc/traefik/traefik.yml:ro
       - ../data/traefik-frontend/config:/etc/traefik/config:ro
       - ../data/traefik-frontend/letsencrypt:/letsencrypt

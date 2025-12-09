@@ -25,6 +25,11 @@ certificatesResolvers:
       tlsChallenge: {}
 
 providers:
+  # Docker Provider für Container-Discovery (inkl. eigenes Dashboard)
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+
   # HTTP Provider für Backend-Traefiks
   # Wird automatisch während der Installation konfiguriert
   # Entkommentieren und Endpoints hinzufügen falls benötigt:
