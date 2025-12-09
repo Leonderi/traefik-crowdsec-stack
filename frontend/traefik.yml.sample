@@ -8,12 +8,14 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    env_file:
+      - ../data/traefik-frontend/.env
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - ${ABSOLUTE_PATH}/config/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ${ABSOLUTE_PATH}/config:/etc/traefik/config:ro
-      - ${ABSOLUTE_PATH}/letsencrypt:/letsencrypt
-      - ${ABSOLUTE_PATH}/logs:/var/log/traefik
+      - ../data/traefik-frontend/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ../data/traefik-frontend/config:/etc/traefik/config:ro
+      - ../data/traefik-frontend/letsencrypt:/letsencrypt
+      - ../data/traefik-frontend/logs:/var/log/traefik
     labels:
       # Dashboard des vorgeschalteten Traefik
       traefik.enable: "true"
