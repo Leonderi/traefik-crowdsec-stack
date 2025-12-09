@@ -31,9 +31,9 @@ show_banner() {
 ║                                                                      ║
 ║              Traefik-CrowdSec-Stack Installer                        ║
 ║                                                                      ║
-║  Automatische Installation von:                                     ║
-║  • Frontend Traefik (vorgeschalteter Proxy)                         ║
-║  • Backend Stack (Traefik + CrowdSec + Bouncer)                     ║
+║  Automatische Installation von:                                      ║
+║  • Frontend Traefik (vorgeschalteter Proxy)                          ║
+║  • Backend Stack (Traefik + CrowdSec + Bouncer)                      ║
 ║                                                                      ║
 ╚══════════════════════════════════════════════════════════════════════╝
 EOF
