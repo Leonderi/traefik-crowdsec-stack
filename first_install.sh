@@ -17,7 +17,7 @@ step_done() {
 }
 
 # Gesamtschritte für das Skript festlegen
-total_steps=18
+total_steps=19
 current_step=1
 
 # Setze das Arbeitsverzeichnis auf das Verzeichnis, in dem das Skript liegt
@@ -54,6 +54,31 @@ fi
 step_done "Docker Compose installiert"
 ((current_step++))
 
+# Installationsmodus auswählen
+show_step $current_step $total_steps "Installationsmodus auswählen"
+echo "Welchen Installationsmodus möchtest du verwenden?"
+echo "1) Standard-Installation (Traefik übernimmt SSL/TLS-Zertifikate)"
+echo "2) Installation mit vorgeschaltetem Traefik-Proxy (vorgeschalteter Traefik übernimmt SSL/TLS)"
+read -p "Bitte wähle den Installationsmodus (1-2, Standard: 1): " installation_mode
+installation_mode=${installation_mode:-1}
+
+case $installation_mode in
+  1)
+    echo "Standard-Installation gewählt."
+    USE_PROXY_MODE=false
+    ;;
+  2)
+    echo "Installation mit vorgeschaltetem Traefik-Proxy gewählt."
+    USE_PROXY_MODE=true
+    ;;
+  *)
+    echo -e "${red}Ungültige Auswahl. Das Skript wird abgebrochen.${nc}"
+    exit 1
+    ;;
+esac
+step_done "Installationsmodus festgelegt"
+((current_step++))
+
 # Installiere apache2-utils, falls nicht vorhanden
 show_step $current_step $total_steps "Installiere apache2-utils, falls erforderlich"
 command -v htpasswd >/dev/null 2>&1 || { sudo apt update && sudo apt install -y apache2-utils; }
@@ -86,12 +111,13 @@ step_done "Keine bestehenden Netzwerke gefunden"
 
 # Dateien kopieren
 show_step $current_step $total_steps "Kopiere erforderliche Dateien"
+
+# Basis-Dateien, die immer kopiert werden
 files_to_copy=(
   ".env.sample .env"
   "data/crowdsec/.env.sample data/crowdsec/.env"
   "data/socket-proxy/.env.sample data/socket-proxy/.env"
   "data/traefik/.env.sample data/traefik/.env"
-  "data/traefik/traefik.yml.sample data/traefik/traefik.yml"
   "data/traefik/certs/acme_letsencrypt.json.sample data/traefik/certs/acme_letsencrypt.json"
   "data/traefik/certs/tls_letsencrypt.json.sample data/traefik/certs/tls_letsencrypt.json"
   "data/traefik/dynamic_conf/http.middlewares.default.yml.sample data/traefik/dynamic_conf/http.middlewares.default.yml"
@@ -102,6 +128,14 @@ files_to_copy=(
   "data/traefik/dynamic_conf/tls.yml.sample data/traefik/dynamic_conf/tls.yml"
   "data/traefik-crowdsec-bouncer/.env.sample data/traefik-crowdsec-bouncer/.env"
 )
+
+# Je nach Installationsmodus die entsprechende Traefik-Konfiguration und docker-compose.yml hinzufügen
+if [ "$USE_PROXY_MODE" = true ]; then
+  files_to_copy+=("data/traefik/traefik.yml.proxy.sample data/traefik/traefik.yml")
+  files_to_copy+=("docker-compose.yml.proxy.sample docker-compose.yml")
+else
+  files_to_copy+=("data/traefik/traefik.yml.sample data/traefik/traefik.yml")
+fi
 
 # Dateien kopieren oder das Skript beenden, wenn eine .sample Datei fehlt
 for file_pair in "${files_to_copy[@]}"; do
@@ -163,54 +197,61 @@ echo "BOUNCER_KEY_FIREWALL=$BOUNCER_KEY_FIREWALL_PASSWORD" >> ${SCRIPT_DIR}/.env
 step_done "Bouncer-Passwörter generiert"
 ((current_step++))
 
-# E-Mail-Adresse für SSL-Zertifikate
-show_step $current_step $total_steps "Frage nach E-Mail-Adresse für SSL-Zertifikate"
+# E-Mail-Adresse für SSL-Zertifikate (nur im Standard-Modus)
+if [ "$USE_PROXY_MODE" = false ]; then
+  show_step $current_step $total_steps "Frage nach E-Mail-Adresse für SSL-Zertifikate"
 
-# Funktion zur E-Mail-Validierung
-validate_email() {
-  local email_regex="^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
-  if [[ $1 =~ $email_regex ]]; then
-    return 0  # gültige E-Mail
-  else
-    return 1  # ungültige E-Mail
-  fi
-}
-
-# Benutzer nach E-Mail-Adresse fragen und diese bestätigen
-while true; do
-  read -p "Bitte gib deine E-Mail-Adresse für die SSL-Zertifikate ein: " ssl_email
-  if validate_email "$ssl_email"; then
-    echo "Gültige E-Mail-Adresse eingegeben: $ssl_email"
-
-    # Bestätigung der E-Mail-Adresse mit y/n (Standard: y)
-    read -p "Möchtest du diese E-Mail-Adresse verwenden? ($ssl_email) [y/n, Standard: y]: " confirm_email
-    confirm_email=${confirm_email:-y}  # Standardwert auf 'y' setzen
-    confirm_email=$(echo "$confirm_email" | tr '[:upper:]' '[:lower:]')  # In Kleinbuchstaben umwandeln
-
-    if [ "$confirm_email" == "y" ]; then
-      echo "E-Mail-Adresse wurde bestätigt: $ssl_email"
-      break
+  # Funktion zur E-Mail-Validierung
+  validate_email() {
+    local email_regex="^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+    if [[ $1 =~ $email_regex ]]; then
+      return 0  # gültige E-Mail
     else
-      echo -e "\e[31mE-Mail-Adresse wurde nicht bestätigt. Bitte gib eine neue E-Mail-Adresse ein.\e[0m"
+      return 1  # ungültige E-Mail
     fi
-  else
-    echo -e "\e[31mUngültige E-Mail-Adresse. Bitte versuche es erneut.\e[0m"
+  }
+
+  # Benutzer nach E-Mail-Adresse fragen und diese bestätigen
+  while true; do
+    read -p "Bitte gib deine E-Mail-Adresse für die SSL-Zertifikate ein: " ssl_email
+    if validate_email "$ssl_email"; then
+      echo "Gültige E-Mail-Adresse eingegeben: $ssl_email"
+
+      # Bestätigung der E-Mail-Adresse mit y/n (Standard: y)
+      read -p "Möchtest du diese E-Mail-Adresse verwenden? ($ssl_email) [y/n, Standard: y]: " confirm_email
+      confirm_email=${confirm_email:-y}  # Standardwert auf 'y' setzen
+      confirm_email=$(echo "$confirm_email" | tr '[:upper:]' '[:lower:]')  # In Kleinbuchstaben umwandeln
+
+      if [ "$confirm_email" == "y" ]; then
+        echo "E-Mail-Adresse wurde bestätigt: $ssl_email"
+        break
+      else
+        echo -e "\e[31mE-Mail-Adresse wurde nicht bestätigt. Bitte gib eine neue E-Mail-Adresse ein.\e[0m"
+      fi
+    else
+      echo -e "\e[31mUngültige E-Mail-Adresse. Bitte versuche es erneut.\e[0m"
+    fi
+  done
+
+  # Überprüfen, ob die Traefik-Konfigurationsdatei existiert
+  traefik_config_file="data/traefik/traefik.yml"
+  if [ ! -f "$traefik_config_file" ]; then
+    echo -e "\e[31mDie Datei $traefik_config_file existiert nicht. Das Skript wird abgebrochen.\e[0m"
+    exit 1
   fi
-done
 
-# Überprüfen, ob die Traefik-Konfigurationsdatei existiert
-traefik_config_file="data/traefik/traefik.yml"
-if [ ! -f "$traefik_config_file" ]; then
-  echo -e "\e[31mDie Datei $traefik_config_file existiert nicht. Das Skript wird abgebrochen.\e[0m"
-  exit 1
+  # E-Mail-Adresse in der traefik.yml Datei setzen
+  sed -i "s/email: \".*\"/email: \"$ssl_email\"/g" "$traefik_config_file"
+
+  # Schritt abgeschlossen
+  step_done "SSL-Zertifikat E-Mail-Adresse gesetzt"
+  ((current_step++))
+else
+  show_step $current_step $total_steps "Überspringe SSL-Zertifikat E-Mail (Proxy-Modus)"
+  echo "Im Proxy-Modus übernimmt der vorgeschaltete Traefik das Zertifikats-Handling."
+  step_done "SSL-Zertifikat E-Mail übersprungen (Proxy-Modus)"
+  ((current_step++))
 fi
-
-# E-Mail-Adresse in der traefik.yml Datei setzen
-sed -i "s/email: \".*\"/email: \"$ssl_email\"/g" "$traefik_config_file"
-
-# Schritt abgeschlossen
-step_done "SSL-Zertifikat E-Mail-Adresse gesetzt"
-((current_step++))
 
 # Wunsch-Domain für Traefik-Dashboard
 show_step $current_step $total_steps "Frage nach Wunsch-Domain für Traefik-Dashboard"

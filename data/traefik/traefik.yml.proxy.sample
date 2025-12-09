@@ -1,0 +1,54 @@
+api:
+  dashboard: true
+
+metrics:
+  prometheus:
+    addRoutersLabels: true
+
+# Keine CertificatesResolvers - werden vom vorgeschalteten Traefik übernommen
+
+entryPoints:
+  ping:
+    address: ':88'
+  web:
+    address: ':80'
+    # Kein automatisches Redirect zu HTTPS - wird vom vorgeschalteten Traefik übernommen
+  websecure:
+    address: ':443'
+    http:
+      middlewares:
+        - default@file
+        - traefik-bouncer@file
+      tls: {}  # TLS aktiviert, aber ohne Certificate Resolver
+
+ping:
+  entryPoint: "ping"
+
+global:
+  checknewversion: true
+  sendanonymoususage: false
+
+providers:
+  docker:
+    endpoint: "tcp://socket-proxy:2375"
+    exposedByDefault: false
+    network: "proxy"
+  file:
+    directory: "/etc/traefik/dynamic_conf"
+    watch: true
+  providersThrottleDuration: 10s
+
+log:
+  level: INFO
+  filePath: "/var/log/traefik/traefik.log"
+  format: json
+  maxSize: 10
+  maxBackups: 10
+  maxAge: 14
+
+accessLog:
+  filePath: "/var/log/traefik/access.log"
+  format: json
+  bufferingSize: 50
+  fields:
+    defaultMode: keep

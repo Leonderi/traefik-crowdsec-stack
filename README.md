@@ -14,6 +14,14 @@ Diese Anleitung beschreibt die manuelle Installation und Konfiguration des Traef
 ![Ubuntu 24.04 - Testing](https://img.shields.io/badge/Ubuntu_24.04-07--10--2024-orange?logo=ubuntu)
 ![Debian 11 - Testing](https://img.shields.io/badge/Debian_11_(Bullseye)-07--10--2024-A81D33?logo=debian&logoColor=white)
 ![Debian 12 - Testing](https://img.shields.io/badge/Debian_12_(Bookworm)-07--10--2024-A81D33?logo=debian&logoColor=white)
+
+### Installationsmodi
+
+Das Installationsskript unterstützt zwei Modi:
+
+1. **Standard-Installation**: Traefik übernimmt das SSL/TLS-Zertifikats-Handling und exponiert die Ports 80 und 443
+2. **Installation mit vorgeschaltetem Traefik-Proxy**: Ein vorgeschalteter Traefik-Proxy übernimmt das Zertifikats-Handling, die Kommunikation erfolgt über das Proxy-Netzwerk
+
 ### 1. Repository klonen
 
 Als erstes müssen Sie das Repository auf Ihren Server klonen:
@@ -25,6 +33,34 @@ cd /opt/containers/traefik-crowdsec-stack
 sudo chmod +x first_install.sh
 sudo ./first_install.sh
 ```
+
+Das Skript wird Sie nach dem gewünschten Installationsmodus fragen.
+
+#### Hinweise für den Proxy-Modus
+
+Wenn Sie die Installation mit vorgeschaltetem Traefik-Proxy wählen:
+
+- Die Ports 80 und 443 werden **nicht** exponiert
+- Die E-Mail-Abfrage für SSL-Zertifikate wird übersprungen
+- Die Kommunikation erfolgt über das interne Proxy-Netzwerk
+- Der vorgeschaltete Traefik muss sich mit diesem Traefik über das Proxy-Netzwerk verbinden
+
+**Ausführliche Anleitung**: Eine detaillierte Anleitung zur Konfiguration des vorgeschalteten Traefik finden Sie in der [README-PROXY.md](README-PROXY.md).
+
+**Kurzübersicht - Konfiguration des vorgeschalteten Traefik:**
+
+Fügen Sie in Ihrem vorgeschalteten Traefik eine Service-Konfiguration hinzu, die auf den Backend-Traefik verweist:
+
+```yaml
+http:
+  services:
+    backend-traefik:
+      loadBalancer:
+        servers:
+          - url: "http://172.31.191.254:80"
+```
+
+Die IP-Adresse `172.31.191.254` ist die Standard-IP des Backend-Traefik im Proxy-Netzwerk. Diese kann in der `.env`-Datei über `SERVICES_TRAEFIK_NETWORKS_PROXY_IPV4` angepasst werden.
 
 ## Manuelle Anleitung
 ![Ubuntu 20.04 - Testing](https://img.shields.io/badge/Ubuntu_20.04-07--10--2024-orange?logo=ubuntu)
@@ -71,6 +107,8 @@ apt install -y apache2-utils openssl
 
 Kopieren Sie die erforderlichen Konfigurationsdateien aus den .sample-Vorlagen. Stellen Sie sicher, dass Sie im Arbeitsverzeichnis des Projekts sind:
 
+#### Standard-Installation:
+
 ```bash
 cp .env.sample .env
 cp data/crowdsec/.env.sample data/crowdsec/.env
@@ -90,7 +128,31 @@ cp data/traefik/dynamic_conf/tls.yml.sample data/traefik/dynamic_conf/tls.yml
 cp data/traefik-crowdsec-bouncer/.env.sample data/traefik-crowdsec-bouncer/.env
 ```
 
+#### Installation mit vorgeschaltetem Traefik-Proxy:
+
+```bash
+cp .env.sample .env
+cp data/crowdsec/.env.sample data/crowdsec/.env
+cp data/socket-proxy/.env.sample data/socket-proxy/.env
+cp data/traefik/.env.sample data/traefik/.env
+cp data/traefik/traefik.yml.proxy.sample data/traefik/traefik.yml
+cp docker-compose.yml.proxy.sample docker-compose.yml
+cp data/traefik/certs/acme_letsencrypt.json.sample data/traefik/certs/acme_letsencrypt.json
+chmod 600 data/traefik/certs/acme_letsencrypt.json
+cp data/traefik/certs/tls_letsencrypt.json.sample data/traefik/certs/tls_letsencrypt.json
+chmod 600 data/traefik/certs/tls_letsencrypt.json
+cp data/traefik/dynamic_conf/http.middlewares.default.yml.sample data/traefik/dynamic_conf/http.middlewares.default.yml
+cp data/traefik/dynamic_conf/http.middlewares.default-security-headers.yml.sample data/traefik/dynamic_conf/http.middlewares.default-security-headers.yml
+cp data/traefik/dynamic_conf/http.middlewares.gzip.yml.sample data/traefik/dynamic_conf/http.middlewares.gzip.yml
+cp data/traefik/dynamic_conf/http.middlewares.traefik-bouncer.yml.sample data/traefik/dynamic_conf/http.middlewares.traefik-bouncer.yml
+cp data/traefik/dynamic_conf/http.middlewares.traefik-dashboard-auth.yml.sample data/traefik/dynamic_conf/http.middlewares.traefik-dashboard-auth.yml
+cp data/traefik/dynamic_conf/tls.yml.sample data/traefik/dynamic_conf/tls.yml
+cp data/traefik-crowdsec-bouncer/.env.sample data/traefik-crowdsec-bouncer/.env
+```
+
 ### 5. SSL-Zertifikate und Domain konfigurieren
+
+#### Standard-Installation:
 
 Fügen Sie Ihre SSL-Zertifikats-E-Mail-Adresse und die gewünschte Domain für das Traefik-Dashboard in die entsprechenden Konfigurationsdateien ein:
 
@@ -115,6 +177,14 @@ Fügen Sie Ihre SSL-Zertifikats-E-Mail-Adresse und die gewünschte Domain für d
     ```bash
     SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=HOST(`traefik.yourdomain.com`)
     ```
+
+#### Installation mit vorgeschaltetem Traefik-Proxy:
+
+Bei der Installation mit vorgeschaltetem Traefik-Proxy entfällt die SSL-Konfiguration, da der vorgeschaltete Traefik das Zertifikats-Handling übernimmt. Sie müssen nur die Domain in der `.env`-Datei setzen:
+
+```bash
+SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=HOST(`traefik.yourdomain.com`)
+```
 
 ### 6. CrowdSec konfigurieren
 1. CrowdSec Konfigurationsdatein erstellen
@@ -188,7 +258,9 @@ Der `BOUNCER_KEY_FIREWALL` sollte der Wert sein, den Sie generiert haben (in Sch
 
 ### 9. Firewall-Ports überprüfen
 
-Stellen Sie sicher, dass die Firewall die Ports 80 (HTTP) und 443 (HTTPS) freigibt.
+**Standard-Installation**: Stellen Sie sicher, dass die Firewall die Ports 80 (HTTP) und 443 (HTTPS) freigibt.
+
+**Installation mit vorgeschaltetem Traefik-Proxy**: Die Ports 80 und 443 müssen **nicht** freigegeben werden, da die Kommunikation intern über das Proxy-Netzwerk erfolgt.
 
 ### 10. Domain überprüfen
 
