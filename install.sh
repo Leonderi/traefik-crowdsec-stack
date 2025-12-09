@@ -630,6 +630,13 @@ EOL
 # =============================================================================
 
 main() {
+    # Root-Rechte prüfen
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${red}${bold}✗ Fehler: Dieses Script muss mit Root-Rechten ausgeführt werden.${nc}"
+        echo -e "${yellow}Bitte starte das Script mit:${nc} sudo ./install.sh"
+        exit 1
+    fi
+
     # Zeige Banner und Menü
     show_main_menu
 
