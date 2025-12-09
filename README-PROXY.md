@@ -207,7 +207,7 @@ services:
 
 Das Traefik-Dashboard der Backend-VMs ist ebenfalls über den vorgeschalteten Traefik erreichbar, wenn Sie den HTTP Provider verwenden.
 
-**Backend-Traefik** (bereits in compose/traefik-proxy.yml konfiguriert):
+**Backend-Traefik** (bereits in backend/traefik-proxy.yml konfiguriert):
 ```yaml
 labels:
   traefik.enable: "true"
