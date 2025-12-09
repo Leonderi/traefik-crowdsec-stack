@@ -163,6 +163,12 @@ read_current_netplan() {
     fi
 }
 
+# Prüfen ob wir in einem LXC-Container sind
+is_lxc_container() {
+    [ -f /proc/1/environ ] && grep -qa container=lxc /proc/1/environ
+    return $?
+}
+
 # Netplan-Konfiguration anwenden
 apply_network_config() {
     local interface=$1
@@ -210,17 +216,39 @@ EOF
     chmod 600 "$netplan_file"
 
     echo -e "${cyan}Wende netplan-Konfiguration an...${nc}"
-    if netplan apply; then
-        echo -e "${green}✓ Netzwerk-Konfiguration erfolgreich angewendet${nc}"
 
-        # Neue Konfiguration anzeigen
-        echo -e "\n${yellow}Neue Netzwerk-Konfiguration:${nc}"
-        ip -4 addr show "$interface" | grep inet
-        return 0
+    # LXC-Container erkennen und alternative Methode verwenden
+    if is_lxc_container; then
+        echo -e "${yellow}LXC-Container erkannt - verwende alternativen Ansatz...${nc}"
+
+        # In LXC-Containern netplan generate und dann systemd-networkd neu starten
+        if netplan generate 2>/dev/null && systemctl restart systemd-networkd; then
+            echo -e "${green}✓ Netzwerk-Konfiguration erfolgreich angewendet${nc}"
+            sleep 2  # Kurz warten bis Netzwerk neu konfiguriert ist
+
+            # Neue Konfiguration anzeigen
+            echo -e "\n${yellow}Neue Netzwerk-Konfiguration:${nc}"
+            ip -4 addr show "$interface" | grep inet
+            return 0
+        else
+            echo -e "${red}✗ Fehler beim Anwenden der Konfiguration${nc}"
+            echo -e "${yellow}Backup wiederherstellen mit:${nc} mv ${netplan_file}.backup-* $netplan_file && netplan generate && systemctl restart systemd-networkd"
+            return 1
+        fi
     else
-        echo -e "${red}✗ Fehler beim Anwenden der Konfiguration${nc}"
-        echo -e "${yellow}Backup wiederherstellen mit:${nc} mv ${netplan_file}.backup-* $netplan_file && netplan apply"
-        return 1
+        # Standard-Methode für normale Systeme
+        if netplan apply; then
+            echo -e "${green}✓ Netzwerk-Konfiguration erfolgreich angewendet${nc}"
+
+            # Neue Konfiguration anzeigen
+            echo -e "\n${yellow}Neue Netzwerk-Konfiguration:${nc}"
+            ip -4 addr show "$interface" | grep inet
+            return 0
+        else
+            echo -e "${red}✗ Fehler beim Anwenden der Konfiguration${nc}"
+            echo -e "${yellow}Backup wiederherstellen mit:${nc} mv ${netplan_file}.backup-* $netplan_file && netplan apply"
+            return 1
+        fi
     fi
 }
 
