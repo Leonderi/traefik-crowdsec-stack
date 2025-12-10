@@ -1212,10 +1212,22 @@ wait_for_letsencrypt_certificate() {
         # Prüfe ob Zertifikat vorhanden und gültig ist
         cert_issuer=$(echo | timeout 5 openssl s_client -servername "${domain}" -connect "localhost:443" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
 
-        if echo "$cert_issuer" | grep -q "Let's Encrypt"; then
-            echo -e "\n${green}${bold}✓ Let's Encrypt Zertifikat erfolgreich erstellt!${nc}"
-            echo -e "${green}✓ Die Domain ist nun sicher erreichbar unter https://${domain}${nc}"
-            return 0
+        # Prüfe je nach Modus auf den richtigen Issuer
+        if [ "$CONFIG_ACME_STAGING" = true ]; then
+            # Staging-Modus: Prüfe auf "Fake LE" (Staging-Issuer)
+            if echo "$cert_issuer" | grep -qE "(Fake LE|Staging|STAGING)"; then
+                echo -e "\n${green}${bold}✓ Let's Encrypt Staging-Zertifikat erfolgreich erstellt!${nc}"
+                echo -e "${yellow}⚠ Dies ist ein Test-Zertifikat (nicht vertrauenswürdig)${nc}"
+                echo -e "${green}✓ ACME-Konfiguration funktioniert korrekt${nc}"
+                return 0
+            fi
+        else
+            # Production-Modus: Prüfe auf "Let's Encrypt"
+            if echo "$cert_issuer" | grep -q "Let's Encrypt"; then
+                echo -e "\n${green}${bold}✓ Let's Encrypt Zertifikat erfolgreich erstellt!${nc}"
+                echo -e "${green}✓ Die Domain ist nun sicher erreichbar unter https://${domain}${nc}"
+                return 0
+            fi
         fi
 
         # Fortschrittsanzeige
@@ -1229,7 +1241,10 @@ wait_for_letsencrypt_certificate() {
     echo -e "${yellow}Mögliche Ursachen:${nc}"
     echo -e "  • DNS zeigt nicht auf den richtigen Server"
     echo -e "  • Port 80 ist nicht von außen erreichbar (für HTTP-Challenge)"
-    echo -e "  • Let's Encrypt Rate Limits erreicht"
+    if [ "$CONFIG_ACME_STAGING" != true ]; then
+        echo -e "  • Let's Encrypt Rate Limits erreicht (5/Woche)"
+        echo -e "    ${cyan}→ Verwenden Sie den Staging-Modus zum Testen${nc}"
+    fi
     echo -e "\n${cyan}Das Zertifikat wird im Hintergrund erstellt.${nc}"
     echo -e "${cyan}Versuchen Sie die Seite in 2-3 Minuten erneut aufzurufen.${nc}"
     return 1
