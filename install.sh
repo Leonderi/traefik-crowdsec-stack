@@ -560,20 +560,20 @@ setup_ssh_key() {
     fi
 
     if [ -f "$ssh_key_path" ]; then
-        echo -e "${green}✓ SSH-Key existiert bereits: $ssh_key_path${nc}"
+        echo -e "${green}✓ SSH-Key existiert bereits: $ssh_key_path${nc}" >&2
         echo "$ssh_key_path"
         return 0
     fi
 
-    echo -e "${cyan}Generiere SSH-Key für Backend '${hostname:-shared}'-Zugriff...${nc}"
-    ssh-keygen -t rsa -b 4096 -f "$ssh_key_path" -N "" -C "traefik-backend-${hostname:-management}"
+    echo -e "${cyan}Generiere SSH-Key für Backend '${hostname:-shared}'-Zugriff...${nc}" >&2
+    ssh-keygen -t rsa -b 4096 -f "$ssh_key_path" -N "" -C "traefik-backend-${hostname:-management}" >&2
 
     if [ $? -eq 0 ]; then
-        echo -e "${green}✓ SSH-Key erfolgreich erstellt: $ssh_key_path${nc}"
+        echo -e "${green}✓ SSH-Key erfolgreich erstellt: $ssh_key_path${nc}" >&2
         echo "$ssh_key_path"
         return 0
     else
-        echo -e "${red}✗ Fehler beim Erstellen des SSH-Keys${nc}"
+        echo -e "${red}✗ Fehler beim Erstellen des SSH-Keys${nc}" >&2
         return 1
     fi
 }
