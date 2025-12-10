@@ -724,25 +724,45 @@ configure_backend_remote() {
         addresses: [$(echo $dns_servers | tr ',' ', ')]"
 
     # Remote anwenden
-    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${dhcp_ip}" bash <<EOF
+    ssh -i "$ssh_key" -o ServerAliveInterval=5 -o ServerAliveCountMax=1 "${BACKEND_SSH_USER}@${dhcp_ip}" "bash -s" <<EOF
         echo '$netplan_config' > /etc/netplan/01-netcfg.yaml
         chmod 600 /etc/netplan/01-netcfg.yaml
         hostnamectl set-hostname $hostname
         echo "127.0.1.1 $hostname" >> /etc/hosts
-        netplan apply
+
+        # Netplan im Hintergrund mit Delay anwenden, damit SSH sich sauber beenden kann
+        nohup bash -c 'sleep 3; netplan apply' >/dev/null 2>&1 &
+
+        echo "Konfiguration wird angewendet..."
+        exit 0
 EOF
 
-    if [ $? -eq 0 ]; then
-        echo -e "${green}✓ Backend konfiguriert${nc}"
-        echo -e "${yellow}⚠ Neue IP: $target_ip${nc}"
-        BACKEND_STATUS[$index]="configured"
+    local ssh_result=$?
+
+    # SSH wird wahrscheinlich mit einem Fehler beenden (Connection lost), das ist OK
+    echo -e "${cyan}Warte auf Netzwerk-Rekonfiguration...${nc}"
+    sleep 5
+
+    # Teste Verbindung zur neuen IP
+    echo -e "${cyan}Teste Verbindung zur neuen IP: $target_ip${nc}"
+    local retries=0
+    while [ $retries -lt 10 ]; do
+        if ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no "${BACKEND_SSH_USER}@${target_ip}" "echo 'OK'" &>/dev/null; then
+            echo -e "${green}✓ Backend konfiguriert und erreichbar${nc}"
+            echo -e "${green}✓ Neue IP: $target_ip${nc}"
+            BACKEND_STATUS[$index]="configured"
+            sleep 2
+            return 0
+        fi
+        echo -ne "\r${yellow}Warte auf Backend... [Versuch $((retries + 1))/10]${nc}"
         sleep 2
-        return 0
-    else
-        echo -e "${red}✗ Fehler${nc}"
-        read -p "Enter..."
-        return 1
-    fi
+        retries=$((retries + 1))
+    done
+
+    echo -e "\n${yellow}⚠ Backend nicht unter neuer IP erreichbar${nc}"
+    echo -e "${yellow}Bitte prüfen Sie die Netzwerk-Konfiguration manuell${nc}"
+    read -p "Drücken Sie Enter um fortzufahren..."
+    return 1
 }
 
 # Backend remote installieren
