@@ -454,6 +454,9 @@ CONFIG_DASHBOARD_USER=$CONFIG_DASHBOARD_USER
 CONFIG_ACME_EMAIL=$CONFIG_ACME_EMAIL
 CONFIG_ACME_STAGING=$CONFIG_ACME_STAGING
 
+# Dashboard (Passwort-Hash wird gespeichert, nicht das Plaintext-Passwort)
+CONFIG_DASHBOARD_PASS_HASH=$CONFIG_DASHBOARD_PASS
+
 # Backend-VMs (nur Frontend-Modus)
 CONFIG_BACKEND_IPS="${CONFIG_BACKEND_IPS[*]}"
 EOF
@@ -492,6 +495,11 @@ load_installation_config() {
     else
         # Leeres Array wenn keine IPs
         CONFIG_BACKEND_IPS=()
+    fi
+
+    # Passwort-Hash wiederherstellen
+    if [ -n "$CONFIG_DASHBOARD_PASS_HASH" ]; then
+        CONFIG_DASHBOARD_PASS="$CONFIG_DASHBOARD_PASS_HASH"
     fi
 
     echo -e "${green}✓ Konfiguration geladen${nc}"
@@ -937,8 +945,10 @@ show_configuration_menu() {
         fi
 
         # Dashboard-Benutzer
-        if [ -n "$CONFIG_DASHBOARD_USER" ]; then
-            echo -e "${cyan}5)${nc} Dashboard-Benutzer      ${green}[$CONFIG_DASHBOARD_USER]${nc}"
+        if [ -n "$CONFIG_DASHBOARD_USER" ] && [ -n "$CONFIG_DASHBOARD_PASS" ]; then
+            echo -e "${cyan}5)${nc} Dashboard-Benutzer      ${green}[$CONFIG_DASHBOARD_USER + Passwort]${nc}"
+        elif [ -n "$CONFIG_DASHBOARD_USER" ]; then
+            echo -e "${cyan}5)${nc} Dashboard-Benutzer      ${yellow}[$CONFIG_DASHBOARD_USER - Passwort fehlt!]${nc}"
         else
             echo -e "${cyan}5)${nc} Dashboard-Benutzer      ${yellow}[Nicht konfiguriert]${nc}"
         fi
@@ -1088,12 +1098,17 @@ validate_configuration() {
     # Dashboard-Benutzer ist Pflicht
     [ -z "$CONFIG_DASHBOARD_USER" ] && errors+=("Dashboard-Benutzer muss konfiguriert sein")
 
+    # Dashboard-Passwort prüfen (wenn User gesetzt aber kein Pass)
+    if [ -n "$CONFIG_DASHBOARD_USER" ] && [ -z "$CONFIG_DASHBOARD_PASS" ]; then
+        errors+=("Dashboard-Passwort fehlt (Benutzer: $CONFIG_DASHBOARD_USER)")
+    fi
+
     if [ ${#errors[@]} -gt 0 ]; then
         echo -e "\n${red}${bold}Folgende Konfigurationen fehlen:${nc}"
         for error in "${errors[@]}"; do
             echo -e "${red}  ✗ $error${nc}"
         done
-        echo
+        echo -e "\n${yellow}Bitte konfigurieren Sie die fehlenden Werte im Menü.${nc}"
         read -p "Drücken Sie Enter um fortzufahren..."
         return 1
     fi
