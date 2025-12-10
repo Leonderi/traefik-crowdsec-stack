@@ -452,6 +452,7 @@ CONFIG_DASHBOARD_USER=$CONFIG_DASHBOARD_USER
 
 # Let's Encrypt
 CONFIG_ACME_EMAIL=$CONFIG_ACME_EMAIL
+CONFIG_ACME_STAGING=$CONFIG_ACME_STAGING
 
 # Backend-VMs (nur Frontend-Modus)
 CONFIG_BACKEND_IPS="${CONFIG_BACKEND_IPS[*]}"
@@ -507,6 +508,7 @@ init_config_vars() {
 
     # Let's Encrypt E-Mail
     CONFIG_ACME_EMAIL=""
+    CONFIG_ACME_STAGING=false
 
     # Dashboard-Benutzer
     CONFIG_DASHBOARD_USER=""
@@ -703,6 +705,40 @@ configure_acme_email() {
     done
 }
 
+# Let's Encrypt Staging-Modus konfigurieren
+configure_acme_staging() {
+    clear
+    echo -e "${bold}${cyan}Let's Encrypt Modus konfigurieren${nc}\n"
+
+    echo -e "${yellow}Let's Encrypt hat ein Rate-Limit für Produktions-Zertifikate.${nc}"
+    echo -e "${yellow}Für Tests sollten Sie den Staging-Modus verwenden!${nc}\n"
+
+    echo -e "${cyan}Production-Modus:${nc}"
+    echo -e "  • Echte, gültige SSL-Zertifikate"
+    echo -e "  • ${red}Rate-Limit: 5 Zertifikate pro Woche${nc}\n"
+
+    echo -e "${cyan}Staging-Modus:${nc}"
+    echo -e "  • Test-Zertifikate (nicht vertrauenswürdig)"
+    echo -e "  • ${green}Kein Rate-Limit${nc}"
+    echo -e "  • Ideal zum Testen der Konfiguration\n"
+
+    if [ "$CONFIG_ACME_STAGING" = true ]; then
+        echo -e "Aktuell: ${yellow}Staging-Modus (Test)${nc}\n"
+    else
+        echo -e "Aktuell: ${green}Production-Modus${nc}\n"
+    fi
+
+    if confirm "Staging-Modus aktivieren?" "$CONFIG_ACME_STAGING"; then
+        CONFIG_ACME_STAGING=true
+        echo -e "\n${yellow}✓ Staging-Modus aktiviert - Test-Zertifikate werden verwendet${nc}"
+    else
+        CONFIG_ACME_STAGING=false
+        echo -e "\n${green}✓ Production-Modus - Echte Zertifikate werden verwendet${nc}"
+    fi
+
+    sleep 2
+}
+
 # Dashboard-Benutzer konfigurieren
 configure_dashboard_user() {
     clear
@@ -794,33 +830,43 @@ configure_install_directory() {
     clear
     echo -e "${bold}${cyan}Installationsverzeichnis konfigurieren${nc}\n"
 
-    # Automatischen Verzeichnisnamen erstellen falls noch nicht gesetzt
-    if [ -z "$CONFIG_INSTALL_DIR" ]; then
-        case "$INSTALL_TYPE" in
-            "frontend")
-                CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-frontend"
-                ;;
-            "backend-standard")
-                CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-backend"
-                ;;
-            "backend-proxy")
-                CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-backend-proxy"
-                ;;
-        esac
+    # Standard-Unterverzeichnisnamen ermitteln
+    local default_subdir=""
+    local current_subdir=""
+
+    case "$INSTALL_TYPE" in
+        "frontend")
+            default_subdir="traefik-frontend"
+            ;;
+        "backend-standard")
+            default_subdir="traefik-backend"
+            ;;
+        "backend-proxy")
+            default_subdir="traefik-backend-proxy"
+            ;;
+    esac
+
+    # Aktuelles Unterverzeichnis aus CONFIG_INSTALL_DIR extrahieren falls gesetzt
+    if [ -n "$CONFIG_INSTALL_DIR" ]; then
+        current_subdir="${CONFIG_INSTALL_DIR##*/}"
+    else
+        current_subdir="$default_subdir"
     fi
 
-    echo -e "${yellow}Basis-Verzeichnis: ${cyan}$CONFIG_BASE_DIR${nc}"
-    echo -e "${yellow}Aktuelles Installationsverzeichnis: ${cyan}$CONFIG_INSTALL_DIR${nc}\n"
+    echo -e "${yellow}Stammverzeichnis:${nc} ${cyan}$CONFIG_BASE_DIR${nc} ${blue}(im Hauptmenü änderbar)${nc}"
+    echo -e "${yellow}Unterverzeichnis:${nc} ${cyan}$current_subdir${nc}\n"
+    echo -e "${yellow}Vollständiger Pfad:${nc} ${green}$CONFIG_BASE_DIR/$current_subdir${nc}\n"
 
-    read -p "Neues Installationsverzeichnis [Enter = keine Änderung]: " new_install_dir
+    read -p "Neues Unterverzeichnis [Enter = $current_subdir]: " new_subdir
 
-    if [ -n "$new_install_dir" ]; then
-        # Tilde-Expansion
-        new_install_dir="${new_install_dir/#\~/$HOME}"
-        CONFIG_INSTALL_DIR="$new_install_dir"
-        echo -e "\n${green}✓ Installationsverzeichnis gesetzt auf: $CONFIG_INSTALL_DIR${nc}"
+    if [ -n "$new_subdir" ]; then
+        # Vollständigen Pfad zusammensetzen
+        CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/${new_subdir}"
+        echo -e "\n${green}✓ Installationsverzeichnis: $CONFIG_INSTALL_DIR${nc}"
     else
-        echo -e "\n${yellow}Keine Änderung${nc}"
+        # Standard beibehalten
+        CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/${current_subdir}"
+        echo -e "\n${yellow}Keine Änderung - verwende: $CONFIG_INSTALL_DIR${nc}"
     fi
 
     sleep 2
@@ -904,6 +950,15 @@ show_configuration_menu() {
         fi
         echo -e "${cyan}7)${nc} Installationsverzeichnis ${green}[$CONFIG_INSTALL_DIR]${nc}"
 
+        # Let's Encrypt Staging (nicht im Proxy-Modus)
+        if [ "$install_type" != "backend-proxy" ]; then
+            if [ "$CONFIG_ACME_STAGING" = true ]; then
+                echo -e "${cyan}8)${nc} Let's Encrypt Modus     ${yellow}[Staging - Test-Zertifikate]${nc}"
+            else
+                echo -e "${cyan}8)${nc} Let's Encrypt Modus     ${green}[Production]${nc}"
+            fi
+        fi
+
         # Installation starten / Abbrechen
         echo -e "\n${cyan}9)${nc} ${green}${bold}Installation starten${nc}"
         echo -e "${cyan}0)${nc} Abbrechen\n"
@@ -932,6 +987,14 @@ show_configuration_menu() {
                 fi
                 ;;
             7) configure_install_directory ;;
+            8)
+                if [ "$install_type" != "backend-proxy" ]; then
+                    configure_acme_staging
+                else
+                    echo -e "${yellow}Ungültige Auswahl${nc}"
+                    sleep 1
+                fi
+                ;;
             9)
                 # Validierung vor Start
                 if validate_configuration "$install_type"; then
@@ -1202,6 +1265,17 @@ install_frontend_traefik() {
     sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$CONFIG_ACME_EMAIL/g" .env
     sed -i "s/email: \".*\"/email: \"$CONFIG_ACME_EMAIL\"/g" data/traefik-frontend/traefik.yml
 
+    # Let's Encrypt Staging-Modus
+    if [ "$CONFIG_ACME_STAGING" = true ]; then
+        # Staging caServer hinzufügen
+        sed -i '/email: /a\      caServer: "https://acme-staging-v02.api.letsencrypt.org/directory"' data/traefik-frontend/traefik.yml
+        echo -e "${yellow}Staging-Modus aktiviert - Test-Zertifikate werden verwendet${nc}"
+    else
+        # Production (caServer-Zeile entfernen falls vorhanden)
+        sed -i '/caServer: /d' data/traefik-frontend/traefik.yml
+        echo -e "${green}Production-Modus - Echte Zertifikate werden verwendet${nc}"
+    fi
+
     # Dashboard-Domain
     sed -i "s|SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=.*|SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=HOST(\`$CONFIG_DASHBOARD_DOMAIN\`)|g" .env
 
@@ -1267,6 +1341,19 @@ install_frontend_traefik() {
 
     # Stack starten
     show_step $current_step $total_steps "Starte Frontend Traefik"
+
+    # Prüfen, ob Container bereits läuft
+    if [ "$(docker ps -q -f name=traefik-frontend)" ]; then
+        echo -e "${yellow}Container 'traefik-frontend' läuft bereits${nc}"
+        if ! confirm "Container läuft bereits. Neu starten?" "n"; then
+            echo -e "${yellow}Start übersprungen${nc}"
+            save_installation_config
+            return 0
+        fi
+        echo -e "${cyan}Stoppe laufende Container...${nc}"
+        docker compose down
+    fi
+
     if confirm "Möchten Sie den Frontend Traefik jetzt starten?" "y"; then
         docker compose up -d
         step_done "Frontend Traefik gestartet"
@@ -1497,6 +1584,17 @@ install_backend_stack() {
             error_exit "Die Datei $traefik_config_file existiert nicht."
         fi
         sed -i "s/email: \".*\"/email: \"$ssl_email\"/g" "$traefik_config_file"
+
+        # Let's Encrypt Staging-Modus
+        if [ "$CONFIG_ACME_STAGING" = true ]; then
+            # Staging caServer hinzufügen
+            sed -i '/email: /a\      caServer: "https://acme-staging-v02.api.letsencrypt.org/directory"' "$traefik_config_file"
+            echo -e "${yellow}Staging-Modus aktiviert - Test-Zertifikate werden verwendet${nc}"
+        else
+            # Production (caServer-Zeile entfernen falls vorhanden)
+            sed -i '/caServer: /d' "$traefik_config_file"
+            echo -e "${green}Production-Modus - Echte Zertifikate werden verwendet${nc}"
+        fi
 
         step_done "SSL-Zertifikat E-Mail-Adresse gesetzt"
         ((current_step++))
