@@ -2332,15 +2332,27 @@ main() {
             # Direkt zur Installation springen (Menü überspringen)
         else
             # Für frontend und backend-standard: Zeige Menü (auch wenn .install.conf existiert)
-            show_main_menu
-            # Konfigurationsmenü anzeigen
-            show_configuration_menu "$INSTALL_TYPE"
+            # Schleife ermöglicht Rückkehr zum Hauptmenü
+            while true; do
+                show_main_menu
+                # Wenn Konfigurationsmenü mit 0 beendet wird (return 1), zurück zum Hauptmenü
+                if show_configuration_menu "$INSTALL_TYPE"; then
+                    break  # Benutzer hat Installation gestartet (Option 9)
+                fi
+                # Sonst: Benutzer hat 0 gedrückt -> zurück zum Hauptmenü
+            done
         fi
     else
         # Zeige Banner und Menü
-        show_main_menu
-        # Konfigurationsmenü anzeigen
-        show_configuration_menu "$INSTALL_TYPE"
+        # Schleife ermöglicht Rückkehr zum Hauptmenü
+        while true; do
+            show_main_menu
+            # Wenn Konfigurationsmenü mit 0 beendet wird (return 1), zurück zum Hauptmenü
+            if show_configuration_menu "$INSTALL_TYPE"; then
+                break  # Benutzer hat Installation gestartet (Option 9)
+            fi
+            # Sonst: Benutzer hat 0 gedrückt -> zurück zum Hauptmenü
+        done
     fi
 
     # Installationsverzeichnis einrichten (verwendet CONFIG_INSTALL_DIR aus Konfigurationsmenü)
