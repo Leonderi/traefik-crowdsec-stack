@@ -478,8 +478,20 @@ load_installation_config() {
     source "$config_file"
 
     # Backend IPs als Array laden
-    if [ -n "$CONFIG_BACKEND_IPS" ]; then
+    if [ -n "$CONFIG_BACKEND_IPS" ] && [ "$CONFIG_BACKEND_IPS" != " " ]; then
+        # Nur wenn nicht leer und nicht nur Leerzeichen
         read -ra CONFIG_BACKEND_IPS <<< "$CONFIG_BACKEND_IPS"
+        # Leere Elemente aus Array entfernen
+        local temp_ips=()
+        for ip in "${CONFIG_BACKEND_IPS[@]}"; do
+            if [ -n "$ip" ]; then
+                temp_ips+=("$ip")
+            fi
+        done
+        CONFIG_BACKEND_IPS=("${temp_ips[@]}")
+    else
+        # Leeres Array wenn keine IPs
+        CONFIG_BACKEND_IPS=()
     fi
 
     echo -e "${green}✓ Konfiguration geladen${nc}"
