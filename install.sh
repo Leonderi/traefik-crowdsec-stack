@@ -1014,36 +1014,75 @@ check_and_install_docker() {
 
 wait_for_letsencrypt_certificate() {
     local domain=$1
-    local max_wait=60  # Maximum 60 Sekunden warten
+    local max_wait=90  # Maximum 90 Sekunden warten
     local waited=0
 
-    echo -e "\n${cyan}Warte auf Let's Encrypt Zertifikat für ${domain}...${nc}"
-    echo -e "${yellow}Dies kann bis zu 60 Sekunden dauern.${nc}\n"
+    echo -e "\n${cyan}${bold}Let's Encrypt Zertifikat Setup${nc}"
+    echo -e "${yellow}Das Zertifikat wird beim ersten Request erstellt...${nc}\n"
 
-    # Kurz warten damit Traefik starten kann
+    # 1. DNS-Check
+    echo -e "${cyan}[1/4] Prüfe DNS-Konfiguration...${nc}"
+    local resolved_ip=$(dig +short "$domain" A | head -n1)
+    local server_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null)
+
+    if [ -z "$resolved_ip" ]; then
+        echo -e "${red}✗ Domain kann nicht aufgelöst werden${nc}"
+        echo -e "${yellow}⚠ Bitte konfigurieren Sie DNS für $domain${nc}"
+        echo -e "${yellow}⚠ Das Zertifikat wird erstellt sobald DNS konfiguriert ist${nc}"
+        return 1
+    fi
+
+    echo -e "${green}✓ DNS aufgelöst: $domain → $resolved_ip${nc}"
+
+    if [ -n "$server_ip" ] && [ "$resolved_ip" != "$server_ip" ]; then
+        echo -e "${yellow}⚠ Warnung: Domain zeigt auf $resolved_ip, Server-IP ist $server_ip${nc}"
+        echo -e "${yellow}⚠ Let's Encrypt benötigt korrekte DNS-Konfiguration${nc}"
+    fi
+
+    # 2. Kurz warten damit Traefik vollständig gestartet ist
+    echo -e "\n${cyan}[2/4] Warte auf Traefik-Start...${nc}"
     sleep 5
+    echo -e "${green}✓ Traefik sollte bereit sein${nc}"
+
+    # 3. Initialen Request machen (triggert ACME Challenge)
+    echo -e "\n${cyan}[3/4] Triggere ACME Challenge...${nc}"
+    # -k erlaubt ungültiges Zertifikat, -L folgt Redirects, -s silent, -o /dev/null
+    if curl -kLs -o /dev/null -w "%{http_code}" --connect-timeout 10 "https://${domain}" > /dev/null 2>&1; then
+        echo -e "${green}✓ Initialer Request erfolgreich - ACME Challenge gestartet${nc}"
+    else
+        echo -e "${yellow}⚠ Request fehlgeschlagen - Domain evtl. nicht erreichbar${nc}"
+    fi
+
+    # 4. Warte auf Zertifikatserstellung
+    echo -e "\n${cyan}[4/4] Warte auf Let's Encrypt Zertifikat...${nc}"
+    echo -e "${yellow}Dies kann 30-60 Sekunden dauern${nc}\n"
+
+    sleep 10  # Initiale Wartezeit für ACME
 
     while [ $waited -lt $max_wait ]; do
-        # Versuche HTTPS-Verbindung und prüfe Zertifikat
-        if curl -sSf --connect-timeout 5 "https://${domain}" > /dev/null 2>&1; then
-            # Prüfe ob es ein Let's Encrypt Zertifikat ist
-            cert_issuer=$(echo | openssl s_client -servername "${domain}" -connect "${domain}:443" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+        # Prüfe ob Zertifikat vorhanden und gültig ist
+        cert_issuer=$(echo | timeout 5 openssl s_client -servername "${domain}" -connect "localhost:443" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
 
-            if echo "$cert_issuer" | grep -q "Let's Encrypt"; then
-                echo -e "${green}✓ Let's Encrypt Zertifikat erfolgreich erstellt und aktiv!${nc}"
-                return 0
-            fi
+        if echo "$cert_issuer" | grep -q "Let's Encrypt"; then
+            echo -e "\n${green}${bold}✓ Let's Encrypt Zertifikat erfolgreich erstellt!${nc}"
+            echo -e "${green}✓ Die Domain ist nun sicher erreichbar unter https://${domain}${nc}"
+            return 0
         fi
 
         # Fortschrittsanzeige
-        echo -ne "${yellow}Warte... ($waited/$max_wait Sekunden)${nc}\r"
-        sleep 3
-        waited=$((waited + 3))
+        printf "\r${yellow}Warte... [%2d/%d Sekunden]${nc}" "$waited" "$max_wait"
+        sleep 5
+        waited=$((waited + 5))
     done
 
-    echo -e "\n${yellow}⚠ Zeitüberschreitung beim Warten auf das Zertifikat.${nc}"
-    echo -e "${yellow}Das Zertifikat wird möglicherweise noch im Hintergrund erstellt.${nc}"
-    echo -e "${yellow}Bitte laden Sie die Seite in ein paar Minuten neu.${nc}"
+    # Timeout erreicht
+    echo -e "\n\n${yellow}⚠ Zeitüberschreitung beim Warten auf das Zertifikat${nc}"
+    echo -e "${yellow}Mögliche Ursachen:${nc}"
+    echo -e "  • DNS zeigt nicht auf den richtigen Server"
+    echo -e "  • Port 80 ist nicht von außen erreichbar (für HTTP-Challenge)"
+    echo -e "  • Let's Encrypt Rate Limits erreicht"
+    echo -e "\n${cyan}Das Zertifikat wird im Hintergrund erstellt.${nc}"
+    echo -e "${cyan}Versuchen Sie die Seite in 2-3 Minuten erneut aufzurufen.${nc}"
     return 1
 }
 
