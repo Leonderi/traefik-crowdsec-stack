@@ -82,32 +82,12 @@ confirm() {
 
 setup_installation_directory() {
     local mode=$1
-    local mode_name=""
-    local target_dir=""
 
-    # Modus-spezifischen Namen festlegen
-    case "$mode" in
-        "frontend")
-            mode_name="traefik-frontend"
-            ;;
-        "backend-standard")
-            mode_name="traefik-backend"
-            ;;
-        "backend-proxy")
-            mode_name="traefik-backend-proxy"
-            ;;
-    esac
+    # Installationsverzeichnis verwenden (wurde im Konfigurationsmenü gesetzt)
+    INSTALL_DIR="$CONFIG_INSTALL_DIR"
 
-    echo -e "\n${bold}${cyan}Installationsverzeichnis konfigurieren${nc}\n"
-
-    # Nach Basis-Verzeichnis fragen
-    read -p "Basis-Verzeichnis [/opt/containers]: " BASE_DIR
-    BASE_DIR=${BASE_DIR:-/opt/containers}
-
-    # Vollständigen Pfad erstellen
-    INSTALL_DIR="${BASE_DIR}/${mode_name}"
-
-    echo -e "\n${yellow}Zielverzeichnis:${nc} $INSTALL_DIR"
+    echo -e "\n${bold}${cyan}Installationsverzeichnis wird vorbereitet${nc}\n"
+    echo -e "${yellow}Zielverzeichnis:${nc} $INSTALL_DIR"
 
     # Prüfen ob Verzeichnis existiert
     if [ -d "$INSTALL_DIR" ]; then
@@ -170,51 +150,88 @@ setup_installation_directory() {
 # Hauptmenü
 # =============================================================================
 
+# Basis-Verzeichnis konfigurieren
+configure_base_directory() {
+    clear
+    echo -e "${bold}${cyan}Basis-Verzeichnis konfigurieren${nc}\n"
+    echo -e "${yellow}Das Basis-Verzeichnis ist der Hauptordner, unter dem alle"
+    echo -e "Installationen abgelegt werden.${nc}\n"
+    echo -e "Aktuell: ${green}$CONFIG_BASE_DIR${nc}\n"
+
+    read -p "Neues Basis-Verzeichnis [Enter = keine Änderung]: " new_base_dir
+
+    if [ -n "$new_base_dir" ]; then
+        # Tilde-Expansion
+        new_base_dir="${new_base_dir/#\~/$HOME}"
+        CONFIG_BASE_DIR="$new_base_dir"
+        echo -e "\n${green}✓ Basis-Verzeichnis gesetzt auf: $CONFIG_BASE_DIR${nc}"
+    else
+        echo -e "\n${yellow}Keine Änderung${nc}"
+    fi
+
+    sleep 2
+}
+
 show_main_menu() {
-    show_banner
-    echo -e "${bold}Bitte wählen Sie den Installationsmodus:${nc}\n"
-    echo -e "${cyan}1)${nc} Frontend Traefik ${blue}(vorgeschalteter Proxy mit SSL/TLS)${nc}"
-    echo -e "   → Für LXC Container oder zentrale Traefik-Instanz"
-    echo -e "   → Übernimmt SSL/TLS-Zertifikate"
-    echo -e "   → Verbindet sich mit Backend-Traefiks per HTTP\n"
+    # Basis-Verzeichnis initialisieren falls noch nicht gesetzt
+    if [ -z "$CONFIG_BASE_DIR" ]; then
+        CONFIG_BASE_DIR="/opt/containers"
+    fi
 
-    echo -e "${cyan}2)${nc} Backend Stack - Standard ${blue}(mit SSL/TLS)${nc}"
-    echo -e "   → Traefik + CrowdSec + Socket-Proxy + Bouncer"
-    echo -e "   → Traefik übernimmt SSL/TLS-Zertifikate"
-    echo -e "   → Ports 80 und 443 exponiert\n"
+    while true; do
+        show_banner
+        echo -e "${bold}Bitte wählen Sie den Installationsmodus:${nc}\n"
 
-    echo -e "${cyan}3)${nc} Backend Stack - Proxy-Modus ${blue}(ohne SSL/TLS)${nc}"
-    echo -e "   → Traefik + CrowdSec + Socket-Proxy + Bouncer"
-    echo -e "   → Für Betrieb mit vorgeschaltetem Traefik"
-    echo -e "   → Nur Port 80 exponiert (HTTP)\n"
+        echo -e "${cyan}B)${nc} Basis-Verzeichnis         ${green}[$CONFIG_BASE_DIR]${nc}\n"
 
-    echo -e "${cyan}0)${nc} Beenden\n"
+        echo -e "${cyan}1)${nc} Frontend Traefik ${blue}(vorgeschalteter Proxy mit SSL/TLS)${nc}"
+        echo -e "   → Für LXC Container oder zentrale Traefik-Instanz"
+        echo -e "   → Übernimmt SSL/TLS-Zertifikate"
+        echo -e "   → Verbindet sich mit Backend-Traefiks per HTTP\n"
 
-    read -p "Ihre Auswahl [0-3]: " INSTALL_MODE
+        echo -e "${cyan}2)${nc} Backend Stack - Standard ${blue}(mit SSL/TLS)${nc}"
+        echo -e "   → Traefik + CrowdSec + Socket-Proxy + Bouncer"
+        echo -e "   → Traefik übernimmt SSL/TLS-Zertifikate"
+        echo -e "   → Ports 80 und 443 exponiert\n"
 
-    case $INSTALL_MODE in
-        1)
-            INSTALL_TYPE="frontend"
-            echo -e "\n${green}Frontend Traefik gewählt${nc}\n"
-            ;;
-        2)
-            INSTALL_TYPE="backend-standard"
-            echo -e "\n${green}Backend Stack - Standard gewählt${nc}\n"
-            ;;
-        3)
-            INSTALL_TYPE="backend-proxy"
-            echo -e "\n${green}Backend Stack - Proxy-Modus gewählt${nc}\n"
-            ;;
-        0)
-            echo -e "\n${yellow}Installation abgebrochen.${nc}"
-            exit 0
-            ;;
-        *)
-            echo -e "\n${red}Ungültige Auswahl!${nc}"
-            sleep 2
-            show_main_menu
-            ;;
-    esac
+        echo -e "${cyan}3)${nc} Backend Stack - Proxy-Modus ${blue}(ohne SSL/TLS)${nc}"
+        echo -e "   → Traefik + CrowdSec + Socket-Proxy + Bouncer"
+        echo -e "   → Für Betrieb mit vorgeschaltetem Traefik"
+        echo -e "   → Nur Port 80 exponiert (HTTP)\n"
+
+        echo -e "${cyan}0)${nc} Beenden\n"
+
+        read -p "Ihre Auswahl [B/0-3]: " INSTALL_MODE
+
+        case $INSTALL_MODE in
+            [bB])
+                configure_base_directory
+                ;;
+            1)
+                INSTALL_TYPE="frontend"
+                echo -e "\n${green}Frontend Traefik gewählt${nc}\n"
+                return 0
+                ;;
+            2)
+                INSTALL_TYPE="backend-standard"
+                echo -e "\n${green}Backend Stack - Standard gewählt${nc}\n"
+                return 0
+                ;;
+            3)
+                INSTALL_TYPE="backend-proxy"
+                echo -e "\n${green}Backend Stack - Proxy-Modus gewählt${nc}\n"
+                return 0
+                ;;
+            0)
+                echo -e "\n${yellow}Installation abgebrochen.${nc}"
+                exit 0
+                ;;
+            *)
+                echo -e "\n${red}Ungültige Auswahl!${nc}"
+                sleep 2
+                ;;
+        esac
+    done
 }
 
 # =============================================================================
@@ -413,7 +430,8 @@ save_installation_config() {
 
 # Installationstyp und -verzeichnis
 INSTALL_TYPE=$INSTALL_TYPE
-INSTALL_DIR=$INSTALL_DIR
+CONFIG_BASE_DIR=$CONFIG_BASE_DIR
+CONFIG_INSTALL_DIR=$CONFIG_INSTALL_DIR
 
 # Netzwerk-Konfiguration
 CONFIG_IP_ENABLED=$CONFIG_IP_ENABLED
@@ -465,6 +483,10 @@ load_installation_config() {
 
 # Globale Konfigurationsvariablen initialisieren
 init_config_vars() {
+    # Installationsverzeichnis
+    CONFIG_BASE_DIR="${CONFIG_BASE_DIR:-/opt/containers}"
+    CONFIG_INSTALL_DIR=""
+
     # IP-Konfiguration
     CONFIG_IP_ENABLED=false
     CONFIG_IP=""
@@ -763,6 +785,43 @@ configure_backend_vms() {
     sleep 2
 }
 
+# Installationsverzeichnis konfigurieren
+configure_install_directory() {
+    clear
+    echo -e "${bold}${cyan}Installationsverzeichnis konfigurieren${nc}\n"
+
+    # Automatischen Verzeichnisnamen erstellen falls noch nicht gesetzt
+    if [ -z "$CONFIG_INSTALL_DIR" ]; then
+        case "$INSTALL_TYPE" in
+            "frontend")
+                CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-frontend"
+                ;;
+            "backend-standard")
+                CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-backend"
+                ;;
+            "backend-proxy")
+                CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-backend-proxy"
+                ;;
+        esac
+    fi
+
+    echo -e "${yellow}Basis-Verzeichnis: ${cyan}$CONFIG_BASE_DIR${nc}"
+    echo -e "${yellow}Aktuelles Installationsverzeichnis: ${cyan}$CONFIG_INSTALL_DIR${nc}\n"
+
+    read -p "Neues Installationsverzeichnis [Enter = keine Änderung]: " new_install_dir
+
+    if [ -n "$new_install_dir" ]; then
+        # Tilde-Expansion
+        new_install_dir="${new_install_dir/#\~/$HOME}"
+        CONFIG_INSTALL_DIR="$new_install_dir"
+        echo -e "\n${green}✓ Installationsverzeichnis gesetzt auf: $CONFIG_INSTALL_DIR${nc}"
+    else
+        echo -e "\n${yellow}Keine Änderung${nc}"
+    fi
+
+    sleep 2
+}
+
 # Konfigurationsmenü anzeigen
 show_configuration_menu() {
     local install_type=$1
@@ -831,6 +890,16 @@ show_configuration_menu() {
             fi
         fi
 
+        # Installationsverzeichnis
+        if [ -z "$CONFIG_INSTALL_DIR" ]; then
+            case "$install_type" in
+                "frontend") CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-frontend" ;;
+                "backend-standard") CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-backend" ;;
+                "backend-proxy") CONFIG_INSTALL_DIR="${CONFIG_BASE_DIR}/traefik-backend-proxy" ;;
+            esac
+        fi
+        echo -e "${cyan}7)${nc} Installationsverzeichnis ${green}[$CONFIG_INSTALL_DIR]${nc}"
+
         # Installation starten / Abbrechen
         echo -e "\n${cyan}9)${nc} ${green}${bold}Installation starten${nc}"
         echo -e "${cyan}0)${nc} Abbrechen\n"
@@ -858,6 +927,7 @@ show_configuration_menu() {
                     sleep 1
                 fi
                 ;;
+            7) configure_install_directory ;;
             9)
                 # Validierung vor Start
                 if validate_configuration "$install_type"; then
@@ -1590,11 +1660,11 @@ main() {
     # Zeige Banner und Menü
     show_main_menu
 
-    # Installationsverzeichnis einrichten
-    setup_installation_directory "$INSTALL_TYPE"
-
     # Konfigurationsmenü anzeigen
     show_configuration_menu "$INSTALL_TYPE"
+
+    # Installationsverzeichnis einrichten (verwendet CONFIG_INSTALL_DIR aus Konfigurationsmenü)
+    setup_installation_directory "$INSTALL_TYPE"
 
     # Docker prüfen und installieren
     check_and_install_docker
