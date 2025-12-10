@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:${TRAEFIK_VERSION:-3.6}
+    image: traefik:${SERVICES_TRAEFIK_IMAGE_VERSION:-3.6}
     container_name: traefik-frontend
     restart: unless-stopped
     security_opt:
@@ -8,8 +8,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    env_file:
-      - ../data/traefik-frontend/.env
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -19,7 +19,7 @@ services:
     labels:
       # Dashboard des vorgeschalteten Traefik
       traefik.enable: "true"
-      traefik.http.routers.dashboard.rule: "Host(`${TRAEFIK_DASHBOARD_HOST:-traefik.yourdomain.com}`)"
+      traefik.http.routers.dashboard.rule: "${SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST:-HOST(`traefik.yourdomain.com`)}"
       traefik.http.routers.dashboard.entrypoints: "websecure"
       traefik.http.routers.dashboard.service: "api@internal"
       traefik.http.routers.dashboard.tls.certresolver: "letsencrypt"

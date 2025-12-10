@@ -135,10 +135,10 @@ setup_installation_directory() {
         "frontend")
             mkdir -p "$INSTALL_DIR"/{frontend,data/traefik-frontend/certs} /var/log/traefik
             cp -r "$SOURCE_DIR/frontend/traefik.yml.sample" "$INSTALL_DIR/frontend/" 2>/dev/null || true
-            cp -r "$SOURCE_DIR/data/traefik-frontend/.env.sample" "$INSTALL_DIR/data/traefik-frontend/" 2>/dev/null || true
             cp -r "$SOURCE_DIR/data/traefik-frontend/traefik.yml.sample" "$INSTALL_DIR/data/traefik-frontend/" 2>/dev/null || true
             cp -r "$SOURCE_DIR/data/traefik-frontend/certs/acme.json.sample" "$INSTALL_DIR/data/traefik-frontend/certs/" 2>/dev/null || true
             cp "$SOURCE_DIR/docker-compose.frontend.yml" "$INSTALL_DIR/" 2>/dev/null || true
+            cp "$SOURCE_DIR/.env.frontend.sample" "$INSTALL_DIR/.env.sample" 2>/dev/null || true
             ;;
         "backend-standard")
             mkdir -p "$INSTALL_DIR"/{backend,data}
@@ -397,6 +397,466 @@ configure_network() {
 }
 
 # =============================================================================
+# Konfigurationsmenü
+# =============================================================================
+
+# Globale Konfigurationsvariablen initialisieren
+init_config_vars() {
+    # IP-Konfiguration
+    CONFIG_IP_ENABLED=false
+    CONFIG_IP=""
+    CONFIG_CIDR=""
+    CONFIG_GATEWAY=""
+    CONFIG_DNS="8.8.8.8,1.1.1.1"
+
+    # Hostname
+    CONFIG_HOSTNAME_ENABLED=false
+    CONFIG_HOSTNAME=$(hostname)
+
+    # Dashboard-Domain
+    CONFIG_DASHBOARD_DOMAIN=""
+
+    # Let's Encrypt E-Mail
+    CONFIG_ACME_EMAIL=""
+
+    # Dashboard-Benutzer
+    CONFIG_DASHBOARD_USER=""
+    CONFIG_DASHBOARD_PASS=""
+
+    # Backend-VMs (nur für Frontend-Modus)
+    CONFIG_BACKEND_IPS=()
+}
+
+# IP-Einstellungen konfigurieren
+configure_ip_settings() {
+    clear
+    echo -e "${bold}${cyan}IP-Einstellungen konfigurieren${nc}\n"
+
+    INTERFACE=$(detect_network_interface)
+
+    if confirm "Möchten Sie die IP-Adresse dieser Maschine konfigurieren?" "$CONFIG_IP_ENABLED"; then
+        CONFIG_IP_ENABLED=true
+
+        echo -e "\n${cyan}Aktuelle Netzwerk-Konfiguration wird ausgelesen...${nc}\n"
+
+        # Aktuelle IP auslesen
+        CURRENT_IP=$(ip -4 addr show "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+        CURRENT_CIDR=$(ip -4 addr show "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d'/' -f2)
+        CURRENT_GATEWAY=$(ip route 2>/dev/null | grep default | awk '{print $3}' | head -n1)
+
+        echo -e "${yellow}Aktuelle Konfiguration:${nc}"
+        echo -e "  Interface: $INTERFACE"
+        echo -e "  IP-Adresse: ${CURRENT_IP:-nicht gesetzt}${CURRENT_CIDR:+/$CURRENT_CIDR}"
+        echo -e "  Gateway: ${CURRENT_GATEWAY:-nicht gesetzt}"
+
+        echo -e "\n${bold}Neue IP-Konfiguration:${nc}"
+
+        # IP-Adresse
+        read -p "IP-Adresse (z.B. 172.16.16.140) [${CONFIG_IP:-$CURRENT_IP}]: " NEW_IP
+        CONFIG_IP=${NEW_IP:-${CONFIG_IP:-$CURRENT_IP}}
+
+        # CIDR/Subnet
+        read -p "CIDR/Subnetz (z.B. 24 für /24) [${CONFIG_CIDR:-$CURRENT_CIDR:-24}]: " NEW_CIDR
+        CONFIG_CIDR=${NEW_CIDR:-${CONFIG_CIDR:-${CURRENT_CIDR:-24}}}
+
+        # Gateway
+        read -p "Gateway (z.B. 172.16.16.1) [${CONFIG_GATEWAY:-$CURRENT_GATEWAY}]: " NEW_GATEWAY
+        CONFIG_GATEWAY=${NEW_GATEWAY:-${CONFIG_GATEWAY:-$CURRENT_GATEWAY}}
+
+        # DNS-Server
+        read -p "DNS-Server (kommagetrennt) [${CONFIG_DNS}]: " NEW_DNS
+        CONFIG_DNS=${NEW_DNS:-$CONFIG_DNS}
+
+        echo -e "\n${green}✓ IP-Einstellungen gespeichert${nc}"
+        sleep 2
+    else
+        CONFIG_IP_ENABLED=false
+        echo -e "${yellow}IP-Konfiguration wird nicht geändert${nc}"
+        sleep 2
+    fi
+}
+
+# Hostname konfigurieren
+configure_hostname_settings() {
+    clear
+    echo -e "${bold}${cyan}Hostname konfigurieren${nc}\n"
+
+    CURRENT_HOSTNAME=$(hostname)
+    echo -e "${yellow}Aktueller Hostname:${nc} $CURRENT_HOSTNAME"
+
+    if confirm "Möchten Sie den Hostnamen ändern?" "$CONFIG_HOSTNAME_ENABLED"; then
+        CONFIG_HOSTNAME_ENABLED=true
+        read -p "Neuer Hostname [${CONFIG_HOSTNAME}]: " NEW_HOSTNAME
+        CONFIG_HOSTNAME=${NEW_HOSTNAME:-$CONFIG_HOSTNAME}
+        echo -e "${green}✓ Hostname gespeichert: $CONFIG_HOSTNAME${nc}"
+        sleep 2
+    else
+        CONFIG_HOSTNAME_ENABLED=false
+        echo -e "${yellow}Hostname wird nicht geändert${nc}"
+        sleep 2
+    fi
+}
+
+# Dashboard-Domain konfigurieren
+configure_dashboard_domain() {
+    clear
+    echo -e "${bold}${cyan}Dashboard-Domain konfigurieren${nc}\n"
+
+    # Funktion zur Domain-Validierung
+    validate_domain() {
+        local domain_regex="^([a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}$"
+        [[ $1 =~ $domain_regex ]]
+    }
+
+    while true; do
+        if [ -n "$CONFIG_DASHBOARD_DOMAIN" ]; then
+            read -p "Dashboard-Domain (ohne http/https und ohne '/') [$CONFIG_DASHBOARD_DOMAIN]: " input_domain
+            dashboard_domain=${input_domain:-$CONFIG_DASHBOARD_DOMAIN}
+        else
+            read -p "Dashboard-Domain (ohne http/https und ohne '/'): " dashboard_domain
+        fi
+
+        # Bereinigung
+        dashboard_domain=$(echo "$dashboard_domain" | sed -e 's|^http[s]\?://||' -e 's|/$||')
+
+        if [ -z "$dashboard_domain" ]; then
+            echo -e "${yellow}Domain nicht gesetzt${nc}"
+            sleep 2
+            return
+        fi
+
+        if validate_domain "$dashboard_domain"; then
+            CONFIG_DASHBOARD_DOMAIN="$dashboard_domain"
+            echo -e "${green}✓ Dashboard-Domain gespeichert: $CONFIG_DASHBOARD_DOMAIN${nc}"
+            sleep 2
+            return
+        else
+            echo -e "${red}Ungültiges Domain-Format. Bitte versuchen Sie es erneut.${nc}"
+        fi
+    done
+}
+
+# Let's Encrypt E-Mail konfigurieren
+configure_acme_email() {
+    clear
+    echo -e "${bold}${cyan}Let's Encrypt E-Mail konfigurieren${nc}\n"
+
+    # Funktion zur E-Mail-Validierung
+    validate_email() {
+        local email_regex="^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+        [[ $1 =~ $email_regex ]]
+    }
+
+    while true; do
+        if [ -n "$CONFIG_ACME_EMAIL" ]; then
+            read -p "E-Mail-Adresse für Let's Encrypt [$CONFIG_ACME_EMAIL]: " input_email
+            acme_email=${input_email:-$CONFIG_ACME_EMAIL}
+        else
+            read -p "E-Mail-Adresse für Let's Encrypt: " acme_email
+        fi
+
+        if [ -z "$acme_email" ]; then
+            echo -e "${yellow}E-Mail nicht gesetzt${nc}"
+            sleep 2
+            return
+        fi
+
+        if validate_email "$acme_email"; then
+            CONFIG_ACME_EMAIL="$acme_email"
+            echo -e "${green}✓ E-Mail-Adresse gespeichert: $CONFIG_ACME_EMAIL${nc}"
+            sleep 2
+            return
+        else
+            echo -e "${red}Ungültige E-Mail-Adresse. Bitte versuchen Sie es erneut.${nc}"
+        fi
+    done
+}
+
+# Dashboard-Benutzer konfigurieren
+configure_dashboard_user() {
+    clear
+    echo -e "${bold}${cyan}Dashboard-Benutzer konfigurieren${nc}\n"
+
+    # Benutzername
+    if [ -n "$CONFIG_DASHBOARD_USER" ]; then
+        read -p "Dashboard-Benutzername [$CONFIG_DASHBOARD_USER]: " input_user
+        dashboard_user=${input_user:-$CONFIG_DASHBOARD_USER}
+    else
+        read -p "Dashboard-Benutzername: " dashboard_user
+    fi
+
+    if [ -z "$dashboard_user" ]; then
+        echo -e "${yellow}Benutzername nicht gesetzt${nc}"
+        sleep 2
+        return
+    fi
+
+    CONFIG_DASHBOARD_USER="$dashboard_user"
+
+    # Passwort
+    if confirm "Möchten Sie ein neues Passwort setzen?" "y"; then
+        read -sp "Passwort: " pwd
+        echo
+
+        if [ -z "$pwd" ]; then
+            echo -e "${yellow}Passwort nicht gesetzt${nc}"
+            sleep 2
+            return
+        fi
+
+        # Passwort-Hash generieren (für Traefik basicauth)
+        if command -v htpasswd &> /dev/null; then
+            CONFIG_DASHBOARD_PASS=$(htpasswd -nb "$CONFIG_DASHBOARD_USER" "$pwd" | sed 's/\$/\$\$/g')
+            echo -e "${green}✓ Dashboard-Benutzer gespeichert: $CONFIG_DASHBOARD_USER${nc}"
+        else
+            echo -e "${yellow}htpasswd nicht verfügbar - wird später installiert${nc}"
+            # Temporär Passwort speichern für spätere Hash-Generierung
+            CONFIG_DASHBOARD_PASS_PLAIN="$pwd"
+        fi
+    fi
+
+    sleep 2
+}
+
+# Backend-VMs konfigurieren (nur Frontend-Modus)
+configure_backend_vms() {
+    clear
+    echo -e "${bold}${cyan}Backend-VMs konfigurieren${nc}\n"
+
+    if [ ${#CONFIG_BACKEND_IPS[@]} -gt 0 ]; then
+        echo -e "${yellow}Aktuell konfigurierte Backend-VMs:${nc}"
+        for i in "${!CONFIG_BACKEND_IPS[@]}"; do
+            echo -e "  $((i+1)). ${CONFIG_BACKEND_IPS[$i]}"
+        done
+        echo
+
+        if confirm "Möchten Sie die Liste neu konfigurieren?" "n"; then
+            CONFIG_BACKEND_IPS=()
+        else
+            echo -e "${green}Bestehende Backend-VMs beibehalten${nc}"
+            sleep 2
+            return
+        fi
+    fi
+
+    echo -e "${cyan}Geben Sie die IP-Adressen Ihrer Backend-VMs ein:${nc}"
+    echo -e "${yellow}(Eine pro Zeile, leere Zeile zum Beenden)${nc}\n"
+
+    while true; do
+        read -p "Backend-VM IP $(( ${#CONFIG_BACKEND_IPS[@]} + 1 )) (Enter zum Beenden): " backend_ip
+        [ -z "$backend_ip" ] && break
+        CONFIG_BACKEND_IPS+=("$backend_ip")
+        echo -e "${green}✓ Hinzugefügt: $backend_ip${nc}"
+    done
+
+    if [ ${#CONFIG_BACKEND_IPS[@]} -gt 0 ]; then
+        echo -e "\n${green}✓ ${#CONFIG_BACKEND_IPS[@]} Backend-VM(s) konfiguriert${nc}"
+    else
+        echo -e "\n${yellow}Keine Backend-VMs konfiguriert${nc}"
+    fi
+
+    sleep 2
+}
+
+# Konfigurationsmenü anzeigen
+show_configuration_menu() {
+    local install_type=$1
+    local mode_name=""
+
+    # Modus-Namen festlegen
+    case "$install_type" in
+        "frontend") mode_name="Frontend Traefik" ;;
+        "backend-standard") mode_name="Backend Stack (Standard)" ;;
+        "backend-proxy") mode_name="Backend Stack (Proxy-Modus)" ;;
+    esac
+
+    # Konfigurationsvariablen initialisieren
+    init_config_vars
+
+    # Bestehende Konfiguration einlesen falls vorhanden
+    load_existing_config "$install_type"
+
+    while true; do
+        show_banner
+        echo -e "${bold}${cyan}Konfigurationsübersicht - $mode_name${nc}\n"
+
+        # IP-Einstellungen
+        if [ "$CONFIG_IP_ENABLED" = true ]; then
+            echo -e "${cyan}1)${nc} IP-Einstellungen        ${green}[Aktiviert: $CONFIG_IP/$CONFIG_CIDR via $CONFIG_GATEWAY]${nc}"
+        else
+            echo -e "${cyan}1)${nc} IP-Einstellungen        ${yellow}[Nicht konfiguriert]${nc}"
+        fi
+
+        # Hostname
+        if [ "$CONFIG_HOSTNAME_ENABLED" = true ]; then
+            echo -e "${cyan}2)${nc} Hostname                ${green}[Wird geändert zu: $CONFIG_HOSTNAME]${nc}"
+        else
+            echo -e "${cyan}2)${nc} Hostname                ${yellow}[Wird nicht geändert: $(hostname)]${nc}"
+        fi
+
+        # Dashboard-Domain
+        if [ -n "$CONFIG_DASHBOARD_DOMAIN" ]; then
+            echo -e "${cyan}3)${nc} Dashboard-Domain        ${green}[$CONFIG_DASHBOARD_DOMAIN]${nc}"
+        else
+            echo -e "${cyan}3)${nc} Dashboard-Domain        ${yellow}[Nicht konfiguriert]${nc}"
+        fi
+
+        # Let's Encrypt E-Mail (nicht im Proxy-Modus)
+        if [ "$install_type" != "backend-proxy" ]; then
+            if [ -n "$CONFIG_ACME_EMAIL" ]; then
+                echo -e "${cyan}4)${nc} Let's Encrypt E-Mail    ${green}[$CONFIG_ACME_EMAIL]${nc}"
+            else
+                echo -e "${cyan}4)${nc} Let's Encrypt E-Mail    ${yellow}[Nicht konfiguriert]${nc}"
+            fi
+        fi
+
+        # Dashboard-Benutzer
+        if [ -n "$CONFIG_DASHBOARD_USER" ]; then
+            echo -e "${cyan}5)${nc} Dashboard-Benutzer      ${green}[$CONFIG_DASHBOARD_USER]${nc}"
+        else
+            echo -e "${cyan}5)${nc} Dashboard-Benutzer      ${yellow}[Nicht konfiguriert]${nc}"
+        fi
+
+        # Backend-VMs (nur Frontend-Modus)
+        if [ "$install_type" = "frontend" ]; then
+            if [ ${#CONFIG_BACKEND_IPS[@]} -gt 0 ]; then
+                echo -e "${cyan}6)${nc} Backend-VMs             ${green}[${#CONFIG_BACKEND_IPS[@]} VM(s): ${CONFIG_BACKEND_IPS[*]}]${nc}"
+            else
+                echo -e "${cyan}6)${nc} Backend-VMs             ${yellow}[Keine konfiguriert]${nc}"
+            fi
+        fi
+
+        # Installation starten / Abbrechen
+        echo -e "\n${cyan}9)${nc} ${green}${bold}Installation starten${nc}"
+        echo -e "${cyan}0)${nc} Abbrechen\n"
+
+        read -p "Ihre Auswahl [0-9]: " config_choice
+
+        case $config_choice in
+            1) configure_ip_settings ;;
+            2) configure_hostname_settings ;;
+            3) configure_dashboard_domain ;;
+            4)
+                if [ "$install_type" != "backend-proxy" ]; then
+                    configure_acme_email
+                else
+                    echo -e "${yellow}Ungültige Auswahl${nc}"
+                    sleep 1
+                fi
+                ;;
+            5) configure_dashboard_user ;;
+            6)
+                if [ "$install_type" = "frontend" ]; then
+                    configure_backend_vms
+                else
+                    echo -e "${yellow}Ungültige Auswahl${nc}"
+                    sleep 1
+                fi
+                ;;
+            9)
+                # Validierung vor Start
+                if validate_configuration "$install_type"; then
+                    return 0
+                fi
+                ;;
+            0)
+                error_exit "Installation abgebrochen"
+                ;;
+            *)
+                echo -e "${yellow}Ungültige Auswahl${nc}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# Bestehende Konfiguration einlesen
+load_existing_config() {
+    local install_type=$1
+
+    if [ "$install_type" = "frontend" ]; then
+        # Frontend-Konfiguration einlesen
+        if [ -f ".env" ]; then
+            CONFIG_ACME_EMAIL=$(grep "^ACME_EMAIL=" .env 2>/dev/null | cut -d'=' -f2)
+            local dashboard_host=$(grep "^SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=" .env 2>/dev/null | cut -d'=' -f2)
+            # Extrahiere Domain aus HOST(`domain`)
+            CONFIG_DASHBOARD_DOMAIN=$(echo "$dashboard_host" | grep -oP 'HOST\(`\K[^`]+')
+        fi
+
+        if [ -f "frontend/traefik.yml" ]; then
+            # Dashboard-Benutzer auslesen
+            CONFIG_DASHBOARD_USER=$(grep -oP 'basicauth.users:.*"\K[^:]+' frontend/traefik.yml 2>/dev/null | head -n1)
+        fi
+
+        if [ -f "data/traefik-frontend/traefik.yml" ]; then
+            # Backend IPs auslesen
+            mapfile -t CONFIG_BACKEND_IPS < <(grep -oP 'http://\K[0-9.]+(?=/api)' data/traefik-frontend/traefik.yml 2>/dev/null)
+        fi
+    else
+        # Backend-Konfiguration einlesen
+        if [ -f "data/traefik/traefik.yml" ]; then
+            CONFIG_ACME_EMAIL=$(grep -oP 'email:\s*"\K[^"]+' data/traefik/traefik.yml 2>/dev/null | head -n1)
+        fi
+
+        if [ -f ".env" ]; then
+            local dashboard_host=$(grep "^SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=" .env 2>/dev/null | cut -d'=' -f2)
+            # Extrahiere Domain aus HOST(`domain`)
+            CONFIG_DASHBOARD_DOMAIN=$(echo "$dashboard_host" | grep -oP 'HOST\(`\K[^`]+')
+        fi
+    fi
+
+    # Bereinige ungültige Werte
+    [ "$CONFIG_ACME_EMAIL" = "your@email.com" ] && CONFIG_ACME_EMAIL=""
+    [ "$CONFIG_DASHBOARD_DOMAIN" = "traefik.yourdomain.com" ] && CONFIG_DASHBOARD_DOMAIN=""
+}
+
+# Konfiguration validieren
+validate_configuration() {
+    local install_type=$1
+    local errors=()
+
+    # Dashboard-Domain ist Pflicht
+    [ -z "$CONFIG_DASHBOARD_DOMAIN" ] && errors+=("Dashboard-Domain muss konfiguriert sein")
+
+    # Let's Encrypt E-Mail ist Pflicht (außer Proxy-Modus)
+    if [ "$install_type" != "backend-proxy" ]; then
+        [ -z "$CONFIG_ACME_EMAIL" ] && errors+=("Let's Encrypt E-Mail muss konfiguriert sein")
+    fi
+
+    # Dashboard-Benutzer ist Pflicht
+    [ -z "$CONFIG_DASHBOARD_USER" ] && errors+=("Dashboard-Benutzer muss konfiguriert sein")
+
+    if [ ${#errors[@]} -gt 0 ]; then
+        echo -e "\n${red}${bold}Folgende Konfigurationen fehlen:${nc}"
+        for error in "${errors[@]}"; do
+            echo -e "${red}  ✗ $error${nc}"
+        done
+        echo
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return 1
+    fi
+
+    # Bestätigung
+    clear
+    echo -e "${bold}${cyan}Konfiguration abgeschlossen${nc}\n"
+    echo -e "${yellow}Die Installation wird mit folgenden Einstellungen gestartet:${nc}\n"
+
+    [ "$CONFIG_IP_ENABLED" = true ] && echo -e "  ${cyan}IP:${nc} $CONFIG_IP/$CONFIG_CIDR (Gateway: $CONFIG_GATEWAY)"
+    [ "$CONFIG_HOSTNAME_ENABLED" = true ] && echo -e "  ${cyan}Hostname:${nc} $CONFIG_HOSTNAME"
+    echo -e "  ${cyan}Dashboard-Domain:${nc} $CONFIG_DASHBOARD_DOMAIN"
+    [ -n "$CONFIG_ACME_EMAIL" ] && echo -e "  ${cyan}Let's Encrypt E-Mail:${nc} $CONFIG_ACME_EMAIL"
+    echo -e "  ${cyan}Dashboard-Benutzer:${nc} $CONFIG_DASHBOARD_USER"
+    [ ${#CONFIG_BACKEND_IPS[@]} -gt 0 ] && echo -e "  ${cyan}Backend-VMs:${nc} ${CONFIG_BACKEND_IPS[*]}"
+
+    echo
+    if confirm "Mit der Installation fortfahren?" "y"; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# =============================================================================
 # Docker Installation
 # =============================================================================
 
@@ -442,7 +902,7 @@ check_and_install_docker() {
 install_frontend_traefik() {
     echo -e "\n${bold}${cyan}Installation: Frontend Traefik${nc}\n"
 
-    total_steps=11
+    total_steps=8
     current_step=2
 
     # Arbeitsverzeichnis prüfen
@@ -451,164 +911,67 @@ install_frontend_traefik() {
     step_done "Arbeitsverzeichnis geprüft"
     ((current_step++))
 
-    # Apache2-utils installieren
-    show_step $current_step $total_steps "Installiere apache2-utils"
-    command -v htpasswd >/dev/null 2>&1 || { sudo apt update && sudo apt install -y apache2-utils; }
-    step_done "apache2-utils installiert"
-    ((current_step++))
-
-    # Bestehende Konfiguration prüfen
-    show_step $current_step $total_steps "Prüfe bestehende Konfiguration"
-    EXISTING_CONFIG=false
-    EXISTING_EMAIL=""
-    EXISTING_DASHBOARD_HOST=""
-    EXISTING_DASHBOARD_USER=""
-    EXISTING_BACKEND_IPS=()
-
-    if [ -f "data/traefik-frontend/.env" ]; then
-        EXISTING_CONFIG=true
-        EXISTING_EMAIL=$(grep "^ACME_EMAIL=" data/traefik-frontend/.env 2>/dev/null | cut -d'=' -f2)
-        EXISTING_DASHBOARD_HOST=$(grep "^TRAEFIK_DASHBOARD_HOST=" data/traefik-frontend/.env 2>/dev/null | cut -d'=' -f2)
-        echo -e "${yellow}Bestehende Konfiguration gefunden!${nc}"
-    fi
-
-    if [ -f "frontend/traefik.yml" ]; then
-        # Dashboard-Benutzer auslesen (erster Benutzer aus basicauth)
-        EXISTING_DASHBOARD_USER=$(grep -oP 'basicauth.users:.*"\K[^:]+' frontend/traefik.yml 2>/dev/null | head -n1)
-        if [ -n "$EXISTING_DASHBOARD_USER" ]; then
-            echo -e "${cyan}Gefundener Dashboard-Benutzer: $EXISTING_DASHBOARD_USER${nc}"
-        fi
-    fi
-
-    if [ -f "data/traefik-frontend/traefik.yml" ]; then
-        # Backend IPs aus traefik config auslesen
-        EXISTING_BACKEND_IPS=($(grep -oP 'http://\K[0-9.]+(?=/api)' data/traefik-frontend/traefik.yml 2>/dev/null))
-        if [ ${#EXISTING_BACKEND_IPS[@]} -gt 0 ]; then
-            echo -e "${cyan}Gefundene Backend-VMs: ${EXISTING_BACKEND_IPS[*]}${nc}"
-        fi
-    fi
-
-    step_done "Konfiguration geprüft"
-    ((current_step++))
-
     # Konfigurationsdateien kopieren/aktualisieren
     show_step $current_step $total_steps "Bereite Konfigurationsdateien vor"
 
     # Verzeichnisse erstellen falls nicht vorhanden
     mkdir -p data/traefik-frontend/certs /var/log/traefik
 
-    # Nur kopieren wenn nicht vorhanden, sonst behalten
-    [ ! -f "data/traefik-frontend/.env" ] && cp data/traefik-frontend/.env.sample data/traefik-frontend/.env
+    # Dateien kopieren falls nicht vorhanden
+    [ ! -f ".env" ] && cp .env.sample .env
     [ ! -f "frontend/traefik.yml" ] && cp frontend/traefik.yml.sample frontend/traefik.yml
     [ ! -f "data/traefik-frontend/traefik.yml" ] && cp data/traefik-frontend/traefik.yml.sample data/traefik-frontend/traefik.yml
     [ ! -f "data/traefik-frontend/certs/acme.json" ] && cp data/traefik-frontend/certs/acme.json.sample data/traefik-frontend/certs/acme.json
     chmod 600 data/traefik-frontend/certs/acme.json
 
-    # ABSOLUTE_PATH korrekt setzen (immer aktualisieren)
-
     step_done "Konfigurationsdateien vorbereitet"
     ((current_step++))
 
+    # Konfigurationswerte aus Menü anwenden
+    show_step $current_step $total_steps "Wende Konfiguration an"
+
+    # ABSOLUTE_PATH setzen
+    sed -i "s|ABSOLUTE_PATH=.*|ABSOLUTE_PATH=$(pwd)|g" .env
+
     # E-Mail für Let's Encrypt
-    show_step $current_step $total_steps "Konfiguriere Let's Encrypt"
-    if [ -n "$EXISTING_EMAIL" ] && [ "$EXISTING_EMAIL" != "your@email.com" ]; then
-        read -p "E-Mail-Adresse für Let's Encrypt [$EXISTING_EMAIL]: " ACME_EMAIL
-        ACME_EMAIL=${ACME_EMAIL:-$EXISTING_EMAIL}
-    else
-        read -p "Bitte geben Sie Ihre E-Mail-Adresse für Let's Encrypt ein: " ACME_EMAIL
-    fi
-    sed -i "s/email: \".*\"/email: \"$ACME_EMAIL\"/g" data/traefik-frontend/traefik.yml
-    sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$ACME_EMAIL/g" data/traefik-frontend/.env
-    step_done "Let's Encrypt konfiguriert"
-    ((current_step++))
+    sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$CONFIG_ACME_EMAIL/g" .env
+    sed -i "s/email: \".*\"/email: \"$CONFIG_ACME_EMAIL\"/g" data/traefik-frontend/traefik.yml
 
     # Dashboard-Domain
-    show_step $current_step $total_steps "Konfiguriere Dashboard-Domain"
-    if [ -n "$EXISTING_DASHBOARD_HOST" ] && [ "$EXISTING_DASHBOARD_HOST" != "traefik.yourdomain.com" ]; then
-        read -p "Domain für das Traefik-Dashboard [$EXISTING_DASHBOARD_HOST]: " DASHBOARD_HOST
-        DASHBOARD_HOST=${DASHBOARD_HOST:-$EXISTING_DASHBOARD_HOST}
-    else
-        read -p "Bitte geben Sie die Domain für das Traefik-Dashboard ein: " DASHBOARD_HOST
+    sed -i "s|SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=.*|SERVICES_TRAEFIK_LABELS_TRAEFIK_HOST=HOST(\`$CONFIG_DASHBOARD_DOMAIN\`)|g" .env
+
+    # Dashboard-Authentifizierung
+    if [ -n "$CONFIG_DASHBOARD_PASS" ]; then
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$CONFIG_DASHBOARD_PASS\"|g" frontend/traefik.yml
+    elif [ -n "$CONFIG_DASHBOARD_PASS_PLAIN" ]; then
+        # Falls htpasswd vorher nicht verfügbar war, jetzt Hash generieren
+        DASHBOARD_PASS=$(htpasswd -nb "$CONFIG_DASHBOARD_USER" "$CONFIG_DASHBOARD_PASS_PLAIN" | sed 's/\$/\$\$/g')
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" frontend/traefik.yml
     fi
-    sed -i "s/TRAEFIK_DASHBOARD_HOST=.*/TRAEFIK_DASHBOARD_HOST=$DASHBOARD_HOST/g" data/traefik-frontend/.env
-    step_done "Dashboard-Domain konfiguriert"
+
+    step_done "Konfiguration angewendet"
     ((current_step++))
 
     # Backend-VMs konfigurieren
     show_step $current_step $total_steps "Konfiguriere Backend-VMs"
-    BACKEND_IPS=()
-
-    # Bestehende Backend-VMs anbieten
-    if [ ${#EXISTING_BACKEND_IPS[@]} -gt 0 ]; then
-        echo -e "${yellow}Bestehende Backend-VMs gefunden: ${EXISTING_BACKEND_IPS[*]}${nc}"
-        if confirm "Möchten Sie die bestehenden Backend-VMs beibehalten?" "y"; then
-            BACKEND_IPS=("${EXISTING_BACKEND_IPS[@]}")
-            echo -e "${green}Bestehende Backend-VMs übernommen${nc}"
-        else
-            echo -e "${cyan}Geben Sie die IP-Adressen Ihrer Backend-VMs ein (eine pro Zeile, leere Zeile zum Beenden):${nc}"
-            while true; do
-                read -p "Backend-VM IP $(( ${#BACKEND_IPS[@]} + 1 )) (Enter zum Beenden): " BACKEND_IP
-                [ -z "$BACKEND_IP" ] && break
-                BACKEND_IPS+=("$BACKEND_IP")
-            done
-        fi
-    else
-        echo -e "${cyan}Geben Sie die IP-Adressen Ihrer Backend-VMs ein (eine pro Zeile, leere Zeile zum Beenden):${nc}"
-        while true; do
-            read -p "Backend-VM IP $(( ${#BACKEND_IPS[@]} + 1 )) (Enter zum Beenden): " BACKEND_IP
-            [ -z "$BACKEND_IP" ] && break
-            BACKEND_IPS+=("$BACKEND_IP")
-        done
-    fi
 
     # HTTP Provider Endpoints generieren
-    if [ ${#BACKEND_IPS[@]} -gt 0 ]; then
+    if [ ${#CONFIG_BACKEND_IPS[@]} -gt 0 ]; then
         ENDPOINTS=""
-        for ip in "${BACKEND_IPS[@]}"; do
+        for ip in "${CONFIG_BACKEND_IPS[@]}"; do
             ENDPOINTS="$ENDPOINTS\n    - \"http://$ip/api\""
         done
 
         # HTTP Provider aktivieren und Endpoints setzen
-        # Suche die auskommentierten Zeilen und ersetze sie durch aktiven Block
         sed -i '/# http:/,/# *pollInterval:/c\  http:\n    endpoints:'"$ENDPOINTS"'\n    pollInterval: "10s"' data/traefik-frontend/traefik.yml
 
-        echo -e "${green}${#BACKEND_IPS[@]} Backend-VM(s) konfiguriert${nc}"
+        echo -e "${green}${#CONFIG_BACKEND_IPS[@]} Backend-VM(s) konfiguriert${nc}"
     else
-        echo -e "${yellow}Keine Backend-VMs konfiguriert.${nc}"
-        echo -e "${yellow}HTTP Provider bleibt deaktiviert. Sie können ihn später in data/traefik-frontend/traefik.yml aktivieren.${nc}"
+        echo -e "${yellow}Keine Backend-VMs konfiguriert${nc}"
+        echo -e "${yellow}HTTP Provider bleibt deaktiviert${nc}"
     fi
+
     step_done "Backend-VMs konfiguriert"
-    ((current_step++))
-
-    # Dashboard-Authentifizierung
-    show_step $current_step $total_steps "Konfiguriere Dashboard-Authentifizierung"
-
-    # Benutzername
-    if [ -n "$EXISTING_DASHBOARD_USER" ]; then
-        read -p "Dashboard-Benutzername [$EXISTING_DASHBOARD_USER]: " DASHBOARD_USER
-        DASHBOARD_USER=${DASHBOARD_USER:-$EXISTING_DASHBOARD_USER}
-    else
-        read -p "Bitte geben Sie den Benutzernamen für das Dashboard ein: " DASHBOARD_USER
-    fi
-
-    # Passwort - immer neu setzen oder bestehende Authentifizierung beibehalten
-    if [ -n "$EXISTING_DASHBOARD_USER" ] && [ "$DASHBOARD_USER" = "$EXISTING_DASHBOARD_USER" ]; then
-        if confirm "Möchten Sie das bestehende Passwort beibehalten?" "y"; then
-            echo -e "${green}Bestehende Authentifizierung wird beibehalten${nc}"
-        else
-            DASHBOARD_PASS=$(htpasswd -nb "$DASHBOARD_USER" "$(read -sp 'Neues Passwort: ' pwd; echo $pwd)" | sed 's/\$/\$\$/g')
-            echo
-            sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" frontend/traefik.yml
-            echo -e "${green}Neues Passwort gesetzt${nc}"
-        fi
-    else
-        DASHBOARD_PASS=$(htpasswd -nb "$DASHBOARD_USER" "$(read -sp 'Passwort: ' pwd; echo $pwd)" | sed 's/\$/\$\$/g')
-        echo
-        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" frontend/traefik.yml
-        echo -e "${green}Dashboard-Authentifizierung erstellt${nc}"
-    fi
-
-    step_done "Dashboard-Authentifizierung konfiguriert"
     ((current_step++))
 
     # Firewall konfigurieren
@@ -644,8 +1007,8 @@ install_frontend_traefik() {
         step_done "Frontend Traefik gestartet"
 
         echo -e "\n${green}${bold}Installation abgeschlossen!${nc}\n"
-        echo -e "${cyan}Dashboard erreichbar unter:${nc} https://$DASHBOARD_HOST"
-        echo -e "${cyan}Benutzername:${nc} $DASHBOARD_USER"
+        echo -e "${cyan}Dashboard erreichbar unter:${nc} https://$CONFIG_DASHBOARD_DOMAIN"
+        echo -e "${cyan}Benutzername:${nc} $CONFIG_DASHBOARD_USER"
         echo -e "\n${cyan}Zum Verwalten des Stacks:${nc}"
         echo -e "  Start:   docker compose up -d"
         echo -e "  Stop:    docker compose down"
@@ -1029,19 +1392,19 @@ main() {
     # Installationsverzeichnis einrichten
     setup_installation_directory "$INSTALL_TYPE"
 
-    # Netzwerk-Konfiguration (optional)
-    configure_network
+    # Konfigurationsmenü anzeigen
+    show_configuration_menu "$INSTALL_TYPE"
 
     # Docker prüfen und installieren
     check_and_install_docker
 
     # IP-Konfiguration anwenden falls gewünscht
-    if [ "$CONFIGURE_IP" = true ]; then
+    if [ "$CONFIG_IP_ENABLED" = true ]; then
         echo -e "\n${cyan}Wende IP-Konfiguration an...${nc}"
-        if apply_network_config "$INTERFACE" "$NEW_IP/$NEW_CIDR" "$NEW_GATEWAY" "$NEW_DNS"; then
+        if apply_network_config "$INTERFACE" "$CONFIG_IP/$CONFIG_CIDR" "$CONFIG_GATEWAY" "$CONFIG_DNS"; then
             echo -e "${green}✓ IP-Konfiguration erfolgreich angewendet${nc}"
             echo -e "${yellow}Hinweis: Möglicherweise wurde die SSH-Verbindung getrennt.${nc}"
-            echo -e "${yellow}Neue IP-Adresse: $NEW_IP${nc}\n"
+            echo -e "${yellow}Neue IP-Adresse: $CONFIG_IP${nc}\n"
         else
             echo -e "${red}✗ Fehler bei der IP-Konfiguration${nc}"
             if ! confirm "Trotzdem fortfahren?" "n"; then
@@ -1051,10 +1414,10 @@ main() {
     fi
 
     # Hostname ändern falls gewünscht
-    if [ "$CONFIGURE_HOSTNAME" = true ]; then
-        echo -e "\n${cyan}Setze Hostnamen auf: $NEW_HOSTNAME${nc}"
-        sudo hostnamectl set-hostname "$NEW_HOSTNAME"
-        echo "127.0.1.1 $NEW_HOSTNAME" | sudo tee -a /etc/hosts > /dev/null
+    if [ "$CONFIG_HOSTNAME_ENABLED" = true ]; then
+        echo -e "\n${cyan}Setze Hostnamen auf: $CONFIG_HOSTNAME${nc}"
+        sudo hostnamectl set-hostname "$CONFIG_HOSTNAME"
+        echo "127.0.1.1 $CONFIG_HOSTNAME" | sudo tee -a /etc/hosts > /dev/null
         echo -e "${green}✓ Hostname geändert${nc}\n"
     fi
 
