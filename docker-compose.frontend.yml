@@ -1,2 +1,2 @@
 include:
-  - frontend/traefik.yml
+  - compose/traefik.yml

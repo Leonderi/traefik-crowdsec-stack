@@ -133,23 +133,23 @@ setup_installation_directory() {
 
     case "$mode" in
         "frontend")
-            mkdir -p "$INSTALL_DIR"/{frontend,data/traefik-frontend/certs} /var/log/traefik
-            cp -r "$SOURCE_DIR/frontend/traefik.yml.sample" "$INSTALL_DIR/frontend/" 2>/dev/null || true
+            mkdir -p "$INSTALL_DIR"/{compose,data/traefik-frontend/certs} /var/log/traefik
+            cp -r "$SOURCE_DIR/frontend/traefik.yml.sample" "$INSTALL_DIR/compose/" 2>/dev/null || true
             cp -r "$SOURCE_DIR/data/traefik-frontend/traefik.yml.sample" "$INSTALL_DIR/data/traefik-frontend/" 2>/dev/null || true
             cp -r "$SOURCE_DIR/data/traefik-frontend/certs/acme.json.sample" "$INSTALL_DIR/data/traefik-frontend/certs/" 2>/dev/null || true
             cp "$SOURCE_DIR/docker-compose.frontend.yml" "$INSTALL_DIR/" 2>/dev/null || true
             cp "$SOURCE_DIR/.env.frontend.sample" "$INSTALL_DIR/.env.sample" 2>/dev/null || true
             ;;
         "backend-standard")
-            mkdir -p "$INSTALL_DIR"/{backend,data}
-            cp -r "$SOURCE_DIR/backend"/* "$INSTALL_DIR/backend/" 2>/dev/null || true
+            mkdir -p "$INSTALL_DIR"/{compose,data}
+            cp -r "$SOURCE_DIR/backend"/* "$INSTALL_DIR/compose/" 2>/dev/null || true
             cp -r "$SOURCE_DIR/data"/* "$INSTALL_DIR/data/" 2>/dev/null || true
             cp "$SOURCE_DIR/docker-compose.yml" "$INSTALL_DIR/" 2>/dev/null || true
             cp "$SOURCE_DIR/.env.sample" "$INSTALL_DIR/" 2>/dev/null || true
             ;;
         "backend-proxy")
-            mkdir -p "$INSTALL_DIR"/{backend,data}
-            cp -r "$SOURCE_DIR/backend"/* "$INSTALL_DIR/backend/" 2>/dev/null || true
+            mkdir -p "$INSTALL_DIR"/{compose,data}
+            cp -r "$SOURCE_DIR/backend"/* "$INSTALL_DIR/compose/" 2>/dev/null || true
             cp -r "$SOURCE_DIR/data"/* "$INSTALL_DIR/data/" 2>/dev/null || true
             cp "$SOURCE_DIR/docker-compose.yml.proxy.sample" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
             cp "$SOURCE_DIR/.env.sample" "$INSTALL_DIR/" 2>/dev/null || true
@@ -427,6 +427,26 @@ init_config_vars() {
     CONFIG_BACKEND_IPS=()
 }
 
+# Netplan-Konfiguration auslesen
+read_netplan_config() {
+    local interface=$1
+    local netplan_file=$(find /etc/netplan -name "*.yaml" -o -name "*.yml" 2>/dev/null | head -n1)
+
+    if [ -z "$netplan_file" ]; then
+        echo "none"
+        return
+    fi
+
+    # Prüfen ob DHCP konfiguriert ist
+    if grep -q "dhcp4.*true" "$netplan_file" 2>/dev/null; then
+        echo "dhcp"
+        return
+    fi
+
+    # Statische Konfiguration
+    echo "static"
+}
+
 # IP-Einstellungen konfigurieren
 configure_ip_settings() {
     clear
@@ -444,10 +464,32 @@ configure_ip_settings() {
         CURRENT_CIDR=$(ip -4 addr show "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d'/' -f2)
         CURRENT_GATEWAY=$(ip route 2>/dev/null | grep default | awk '{print $3}' | head -n1)
 
-        echo -e "${yellow}Aktuelle Konfiguration:${nc}"
-        echo -e "  Interface: $INTERFACE"
-        echo -e "  IP-Adresse: ${CURRENT_IP:-nicht gesetzt}${CURRENT_CIDR:+/$CURRENT_CIDR}"
-        echo -e "  Gateway: ${CURRENT_GATEWAY:-nicht gesetzt}"
+        # Netplan-Konfigurationstyp auslesen
+        NETPLAN_TYPE=$(read_netplan_config "$INTERFACE")
+
+        # DNS-Server auslesen
+        CURRENT_DNS=$(grep "nameserver" /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
+
+        echo -e "${yellow}Aktuelle Netzwerk-Konfiguration:${nc}"
+        echo -e "  Interface: ${cyan}$INTERFACE${nc}"
+
+        case "$NETPLAN_TYPE" in
+            "dhcp")
+                echo -e "  Konfigurationstyp: ${cyan}DHCP${nc}"
+                echo -e "  Aktuelle IP: ${cyan}${CURRENT_IP:-nicht gesetzt}${CURRENT_CIDR:+/$CURRENT_CIDR}${nc} (via DHCP)"
+                ;;
+            "static")
+                echo -e "  Konfigurationstyp: ${cyan}Statisch${nc}"
+                echo -e "  IP-Adresse: ${cyan}${CURRENT_IP:-nicht gesetzt}${CURRENT_CIDR:+/$CURRENT_CIDR}${nc}"
+                ;;
+            "none")
+                echo -e "  Konfigurationstyp: ${yellow}Keine netplan-Konfiguration gefunden${nc}"
+                echo -e "  Aktuelle IP: ${cyan}${CURRENT_IP:-nicht gesetzt}${CURRENT_CIDR:+/$CURRENT_CIDR}${nc}"
+                ;;
+        esac
+
+        echo -e "  Gateway: ${cyan}${CURRENT_GATEWAY:-nicht gesetzt}${nc}"
+        echo -e "  DNS-Server: ${cyan}${CURRENT_DNS:-nicht gesetzt}${nc}"
 
         echo -e "\n${bold}Neue IP-Konfiguration:${nc}"
 
@@ -783,9 +825,9 @@ load_existing_config() {
             CONFIG_DASHBOARD_DOMAIN=$(echo "$dashboard_host" | grep -oP 'HOST\(`\K[^`]+')
         fi
 
-        if [ -f "frontend/traefik.yml" ]; then
+        if [ -f "compose/traefik.yml" ]; then
             # Dashboard-Benutzer auslesen
-            CONFIG_DASHBOARD_USER=$(grep -oP 'basicauth.users:.*"\K[^:]+' frontend/traefik.yml 2>/dev/null | head -n1)
+            CONFIG_DASHBOARD_USER=$(grep -oP 'basicauth.users:.*"\K[^:]+' compose/traefik.yml 2>/dev/null | head -n1)
         fi
 
         if [ -f "data/traefik-frontend/traefik.yml" ]; then
@@ -919,7 +961,7 @@ install_frontend_traefik() {
 
     # Dateien kopieren falls nicht vorhanden
     [ ! -f ".env" ] && cp .env.sample .env
-    [ ! -f "frontend/traefik.yml" ] && cp frontend/traefik.yml.sample frontend/traefik.yml
+    [ ! -f "compose/traefik.yml" ] && cp compose/traefik.yml.sample compose/traefik.yml
     [ ! -f "data/traefik-frontend/traefik.yml" ] && cp data/traefik-frontend/traefik.yml.sample data/traefik-frontend/traefik.yml
     [ ! -f "data/traefik-frontend/certs/acme.json" ] && cp data/traefik-frontend/certs/acme.json.sample data/traefik-frontend/certs/acme.json
     chmod 600 data/traefik-frontend/certs/acme.json
@@ -942,11 +984,11 @@ install_frontend_traefik() {
 
     # Dashboard-Authentifizierung
     if [ -n "$CONFIG_DASHBOARD_PASS" ]; then
-        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$CONFIG_DASHBOARD_PASS\"|g" frontend/traefik.yml
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$CONFIG_DASHBOARD_PASS\"|g" compose/traefik.yml
     elif [ -n "$CONFIG_DASHBOARD_PASS_PLAIN" ]; then
         # Falls htpasswd vorher nicht verfügbar war, jetzt Hash generieren
         DASHBOARD_PASS=$(htpasswd -nb "$CONFIG_DASHBOARD_USER" "$CONFIG_DASHBOARD_PASS_PLAIN" | sed 's/\$/\$\$/g')
-        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" frontend/traefik.yml
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" compose/traefik.yml
     fi
 
     step_done "Konfiguration angewendet"
