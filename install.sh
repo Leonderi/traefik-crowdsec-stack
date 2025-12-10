@@ -184,24 +184,20 @@ show_main_menu() {
 
         echo -e "${cyan}B)${nc} Basis-Verzeichnis         ${green}[$CONFIG_BASE_DIR]${nc}\n"
 
-        echo -e "${cyan}1)${nc} Frontend Traefik ${blue}(vorgeschalteter Proxy mit SSL/TLS)${nc}"
-        echo -e "   → Für LXC Container oder zentrale Traefik-Instanz"
-        echo -e "   → Übernimmt SSL/TLS-Zertifikate"
-        echo -e "   → Verbindet sich mit Backend-Traefiks per HTTP\n"
+        echo -e "${cyan}1)${nc} Frontend & Backend Installation ${blue}(zentrale Management-Instanz)${nc}"
+        echo -e "   → Frontend-Traefik mit SSL/TLS-Zertifikaten"
+        echo -e "   → Verwaltung mehrerer Backend-Instanzen via SSH"
+        echo -e "   → Automatische Remote-Installation und -Konfiguration\n"
 
-        echo -e "${cyan}2)${nc} Backend Stack - Standard ${blue}(mit SSL/TLS)${nc}"
-        echo -e "   → Traefik + CrowdSec + Socket-Proxy + Bouncer"
-        echo -e "   → Traefik übernimmt SSL/TLS-Zertifikate"
-        echo -e "   → Ports 80 und 443 exponiert\n"
-
-        echo -e "${cyan}3)${nc} Backend Stack - Proxy-Modus ${blue}(ohne SSL/TLS)${nc}"
-        echo -e "   → Traefik + CrowdSec + Socket-Proxy + Bouncer"
-        echo -e "   → Für Betrieb mit vorgeschaltetem Traefik"
-        echo -e "   → Nur Port 80 exponiert (HTTP)\n"
+        echo -e "${cyan}2)${nc} Standalone Backend Installation ${blue}(unabhängige Instanz)${nc}"
+        echo -e "   → Wählen Sie zwischen:"
+        echo -e "     • Backend mit SSL/TLS ${blue}(Ports 80 + 443)${nc}"
+        echo -e "     • Backend im Proxy-Modus ${blue}(nur Port 80)${nc}"
+        echo -e "   → Traefik + CrowdSec + Socket-Proxy + Bouncer\n"
 
         echo -e "${cyan}0)${nc} Beenden\n"
 
-        read -p "Ihre Auswahl [B/0-3]: " INSTALL_MODE
+        read -p "Ihre Auswahl [B/0-2]: " INSTALL_MODE
 
         case $INSTALL_MODE in
             [bB])
@@ -209,18 +205,50 @@ show_main_menu() {
                 ;;
             1)
                 INSTALL_TYPE="frontend"
-                echo -e "\n${green}Frontend Traefik gewählt${nc}\n"
+                echo -e "\n${green}Frontend & Backend Installation gewählt${nc}\n"
                 return 0
                 ;;
             2)
-                INSTALL_TYPE="backend-standard"
-                echo -e "\n${green}Backend Stack - Standard gewählt${nc}\n"
-                return 0
-                ;;
-            3)
-                INSTALL_TYPE="backend-proxy"
-                echo -e "\n${green}Backend Stack - Proxy-Modus gewählt${nc}\n"
-                return 0
+                # Submenu für Backend-Auswahl
+                while true; do
+                    clear
+                    show_banner
+                    echo -e "${bold}${cyan}Standalone Backend - Modus wählen:${nc}\n"
+
+                    echo -e "${cyan}1)${nc} Backend mit SSL/TLS ${blue}(Standard)${nc}"
+                    echo -e "   → Traefik übernimmt SSL/TLS-Zertifikate"
+                    echo -e "   → Ports 80 und 443 exponiert"
+                    echo -e "   → Eigenständiger Betrieb\n"
+
+                    echo -e "${cyan}2)${nc} Backend im Proxy-Modus ${blue}(ohne SSL/TLS)${nc}"
+                    echo -e "   → Für Betrieb mit vorgeschaltetem Frontend-Traefik"
+                    echo -e "   → Nur Port 80 exponiert (HTTP)"
+                    echo -e "   → SSL/TLS wird vom Frontend übernommen\n"
+
+                    echo -e "${cyan}0)${nc} Zurück\n"
+
+                    read -p "Ihre Auswahl [0-2]: " backend_choice
+
+                    case $backend_choice in
+                        1)
+                            INSTALL_TYPE="backend-standard"
+                            echo -e "\n${green}Backend mit SSL/TLS gewählt${nc}\n"
+                            return 0
+                            ;;
+                        2)
+                            INSTALL_TYPE="backend-proxy"
+                            echo -e "\n${green}Backend im Proxy-Modus gewählt${nc}\n"
+                            return 0
+                            ;;
+                        0)
+                            break
+                            ;;
+                        *)
+                            echo -e "\n${red}Ungültige Auswahl!${nc}"
+                            sleep 2
+                            ;;
+                    esac
+                done
                 ;;
             0)
                 echo -e "\n${yellow}Installation abgebrochen.${nc}"
@@ -429,7 +457,6 @@ save_installation_config() {
     cat > "$config_file" << EOF
 # Traefik Installation Configuration
 # Generiert am: $(date '+%Y-%m-%d %H:%M:%S')
-# WARNUNG: Passwörter werden aus Sicherheitsgründen NICHT gespeichert!
 
 # Installationstyp und -verzeichnis
 INSTALL_TYPE=$INSTALL_TYPE
@@ -455,12 +482,14 @@ CONFIG_DASHBOARD_USER=$CONFIG_DASHBOARD_USER
 CONFIG_ACME_EMAIL=$CONFIG_ACME_EMAIL
 CONFIG_ACME_STAGING=$CONFIG_ACME_STAGING
 
-# Dashboard (Passwort-Hash wird gespeichert, nicht das Plaintext-Passwort)
-CONFIG_DASHBOARD_PASS_HASH=$CONFIG_DASHBOARD_PASS
-
 # Backend-VMs (nur Frontend-Modus)
 CONFIG_BACKEND_IPS="${CONFIG_BACKEND_IPS[*]}"
 EOF
+
+    # Dashboard-Passwort separat schreiben (verhindert Variable-Expansion von $ in bcrypt-Hash)
+    if [ -n "$CONFIG_DASHBOARD_PASS" ]; then
+        printf "\n# Dashboard-Passwort (bcrypt-Hash)\nCONFIG_DASHBOARD_PASS_HASH=%s\n" "$CONFIG_DASHBOARD_PASS" >> "$config_file"
+    fi
 
     chmod 600 "$config_file"
     echo -e "${green}✓ Konfiguration gespeichert in: $config_file${nc}"
@@ -519,18 +548,29 @@ load_installation_config() {
 
 # SSH-Key für Backend-Zugriff generieren/laden
 setup_ssh_key() {
-    local ssh_key_path="$HOME/.ssh/traefik_backend_rsa"
+    local hostname=$1
+    local ssh_key_path
+
+    # Unique SSH key per backend für bessere Security-Isolation
+    if [ -n "$hostname" ]; then
+        ssh_key_path="$HOME/.ssh/traefik_backend_${hostname}_rsa"
+    else
+        # Fallback für legacy/shared key
+        ssh_key_path="$HOME/.ssh/traefik_backend_rsa"
+    fi
 
     if [ -f "$ssh_key_path" ]; then
         echo -e "${green}✓ SSH-Key existiert bereits: $ssh_key_path${nc}"
+        echo "$ssh_key_path"
         return 0
     fi
 
-    echo -e "${cyan}Generiere SSH-Key für Backend-Zugriff...${nc}"
-    ssh-keygen -t rsa -b 4096 -f "$ssh_key_path" -N "" -C "traefik-backend-management"
+    echo -e "${cyan}Generiere SSH-Key für Backend '${hostname:-shared}'-Zugriff...${nc}"
+    ssh-keygen -t rsa -b 4096 -f "$ssh_key_path" -N "" -C "traefik-backend-${hostname:-management}"
 
     if [ $? -eq 0 ]; then
-        echo -e "${green}✓ SSH-Key erfolgreich erstellt${nc}"
+        echo -e "${green}✓ SSH-Key erfolgreich erstellt: $ssh_key_path${nc}"
+        echo "$ssh_key_path"
         return 0
     else
         echo -e "${red}✗ Fehler beim Erstellen des SSH-Keys${nc}"
@@ -540,31 +580,40 @@ setup_ssh_key() {
 
 # SSH Public Key anzeigen
 show_ssh_public_key() {
-    local ssh_key_path="$HOME/.ssh/traefik_backend_rsa"
-
     clear
-    echo -e "${bold}${cyan}SSH Public Key für Backend-Zugriff${nc}\n"
+    echo -e "${bold}${cyan}SSH Public Keys für Backend-Zugriff${nc}\n"
 
-    if [ ! -f "${ssh_key_path}.pub" ]; then
-        echo -e "${yellow}SSH-Key existiert noch nicht.${nc}"
-        if confirm "Möchten Sie den SSH-Key jetzt generieren?" "y"; then
-            setup_ssh_key
-        else
-            return 1
-        fi
+    # Zeige SSH Keys für alle konfigurierten Backends
+    if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
+        echo -e "${yellow}Keine Backends konfiguriert.${nc}"
+        echo -e "${cyan}Fügen Sie zuerst ein Backend hinzu.${nc}\n"
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return 1
     fi
 
-    echo -e "${yellow}Kopieren Sie diesen Public Key beim Erstellen des LXC-Containers:${nc}\n"
-    echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}"
-    cat "${ssh_key_path}.pub"
-    echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}\n"
+    for i in "${!BACKEND_HOSTNAMES[@]}"; do
+        local hostname="${BACKEND_HOSTNAMES[$i]}"
+        local ssh_key_path="${BACKEND_SSH_KEYS[$i]}"
+        local status="${BACKEND_STATUS[$i]}"
 
-    echo -e "${cyan}In Proxmox:${nc}"
-    echo -e "  1. LXC Container erstellen"
-    echo -e "  2. Bei 'SSH public keys' den obigen Key einfügen"
+        echo -e "${bold}${cyan}Backend #$((i + 1)): $hostname${nc} ${yellow}[$status]${nc}"
+
+        if [ ! -f "${ssh_key_path}.pub" ]; then
+            echo -e "${red}  ✗ SSH-Key fehlt: $ssh_key_path${nc}\n"
+            continue
+        fi
+
+        echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}"
+        cat "${ssh_key_path}.pub"
+        echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}\n"
+    done
+
+    echo -e "${cyan}In Proxmox beim Erstellen des LXC-Containers:${nc}"
+    echo -e "  1. LXC Container mit gewünschtem Hostname erstellen"
+    echo -e "  2. Bei 'SSH public keys' den entsprechenden Key einfügen"
     echo -e "  3. Container starten und DHCP-IP notieren\n"
 
-    read -p "Drücken Sie Enter wenn Sie fortfahren möchten..."
+    read -p "Drücken Sie Enter um fortzufahren..."
 }
 
 # Backend hinzufügen
@@ -581,6 +630,23 @@ add_backend() {
         fi
         echo -e "${red}Hostname darf nicht leer sein${nc}"
     done
+
+    # Generiere unique SSH-Key für dieses Backend (Security-Isolation)
+    echo -e "\n${cyan}Generiere SSH-Key für Backend '$hostname'...${nc}"
+    local ssh_key_path=$(setup_ssh_key "$hostname")
+    if [ $? -ne 0 ] || [ -z "$ssh_key_path" ]; then
+        echo -e "${red}✗ Fehler beim Erstellen des SSH-Keys${nc}"
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return 1
+    fi
+
+    # Zeige Public Key für Proxmox LXC Setup
+    echo -e "\n${yellow}SSH Public Key für Proxmox LXC-Container:${nc}"
+    echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}"
+    cat "${ssh_key_path}.pub"
+    echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}"
+    echo -e "\n${cyan}⚠ Kopieren Sie diesen Key beim Erstellen des LXC-Containers!${nc}\n"
+    read -p "Drücken Sie Enter wenn der Container mit dem Key erstellt wurde..."
 
     # Ziel-IP
     local target_ip
@@ -615,11 +681,13 @@ add_backend() {
     BACKEND_DHCP_IPS+=("")  # Wird später gefüllt
     BACKEND_DOMAINS+=("$domain")
     BACKEND_STATUS+=("pending")
+    BACKEND_SSH_KEYS+=("$ssh_key_path")  # Unique SSH key per backend
 
     echo -e "\n${green}✓ Backend hinzugefügt:${nc}"
     echo -e "  Hostname: $hostname"
     echo -e "  Ziel-IP: $target_ip/$cidr"
     echo -e "  Dashboard: $domain"
+    echo -e "  SSH-Key: $ssh_key_path"
 
     sleep 2
 }
@@ -641,6 +709,7 @@ list_backends() {
         echo -e "   Ziel-IP: ${BACKEND_TARGET_IPS[$i]}/${BACKEND_TARGET_CIDR[$i]}"
         echo -e "   DHCP-IP: ${BACKEND_DHCP_IPS[$i]:-nicht gesetzt}"
         echo -e "   Domain: ${BACKEND_DOMAINS[$i]}"
+        echo -e "   SSH-Key: ${BACKEND_SSH_KEYS[$i]}"
         echo -e "   Status: ${status_color}${BACKEND_STATUS[$i]}${nc}\n"
     done
 }
@@ -657,6 +726,7 @@ configure_backend_remote() {
     local hostname="${BACKEND_HOSTNAMES[$index]}"
     local target_ip="${BACKEND_TARGET_IPS[$index]}"
     local cidr="${BACKEND_TARGET_CIDR[$index]}"
+    local ssh_key="${BACKEND_SSH_KEYS[$index]}"  # Per-backend SSH key
 
     clear
     echo -e "${bold}${cyan}Backend konfigurieren: $hostname${nc}\n"
@@ -674,8 +744,7 @@ configure_backend_remote() {
     BACKEND_DHCP_IPS[$index]="$dhcp_ip"
 
     # SSH-Verbindung testen
-    echo -e "\n${cyan}Teste SSH-Verbindung zu $dhcp_ip...${nc}"
-    local ssh_key="$HOME/.ssh/traefik_backend_rsa"
+    echo -e "\n${cyan}Teste SSH-Verbindung zu $dhcp_ip (Key: $ssh_key)...${nc}"
 
     if ! ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no "${BACKEND_SSH_USER}@${dhcp_ip}" "echo 'SSH OK'" &>/dev/null; then
         echo -e "${red}✗ SSH-Verbindung fehlgeschlagen${nc}"
@@ -783,11 +852,12 @@ install_backend_remote() {
     local hostname="${BACKEND_HOSTNAMES[$index]}"
     local target_ip="${BACKEND_TARGET_IPS[$index]}"
     local domain="${BACKEND_DOMAINS[$index]}"
+    local ssh_key="${BACKEND_SSH_KEYS[$index]}"  # Per-backend SSH key
 
     clear
     echo -e "${bold}${cyan}Backend installieren: $hostname${nc}\n"
+    echo -e "${cyan}SSH-Key: $ssh_key${nc}\n"
 
-    local ssh_key="$HOME/.ssh/traefik_backend_rsa"
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local remote_tmp="/tmp/traefik-install"
 
@@ -973,6 +1043,7 @@ init_config_vars() {
     BACKEND_DHCP_IPS=()        # Aktuelle DHCP-IP (temporär)
     BACKEND_DOMAINS=()         # Dashboard-Domain (auto-generiert oder custom)
     BACKEND_STATUS=()          # Status: pending, configured, installed
+    BACKEND_SSH_KEYS=()        # SSH-Key-Pfad pro Backend (Security-Isolation)
     BACKEND_SSH_USER="root"    # SSH-User für Backend-Zugriff
 }
 
@@ -1419,11 +1490,12 @@ show_configuration_menu() {
             fi
         fi
 
-        # Installation starten / Abbrechen
+        # Installation starten / Speichern / Abbrechen
         echo -e "\n${cyan}9)${nc} ${green}${bold}Installation starten${nc}"
-        echo -e "${cyan}0)${nc} Abbrechen\n"
+        echo -e "${cyan}S)${nc} Konfiguration speichern"
+        echo -e "${cyan}0)${nc} Zurück zum Hauptmenü\n"
 
-        read -p "Ihre Auswahl [0-9]: " config_choice
+        read -p "Ihre Auswahl [0-9/S]: " config_choice
 
         case $config_choice in
             1) configure_ip_settings ;;
@@ -1461,8 +1533,16 @@ show_configuration_menu() {
                     return 0
                 fi
                 ;;
+            [sS])
+                save_installation_config
+                echo -e "${green}✓ Konfiguration wurde gespeichert${nc}"
+                echo -e "${cyan}Sie können jetzt das Menü verlassen oder weitere Änderungen vornehmen${nc}"
+                sleep 2
+                ;;
             0)
-                error_exit "Installation abgebrochen"
+                echo -e "\n${yellow}Zurück zum Hauptmenü (Konfiguration nicht gespeichert)${nc}"
+                sleep 1
+                return 1
                 ;;
             *)
                 echo -e "${yellow}Ungültige Auswahl${nc}"
