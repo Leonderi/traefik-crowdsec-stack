@@ -817,12 +817,8 @@ CONFIG_HOSTNAME_ENABLED=false"
 
     echo -e "${cyan}[4/5] Starte Installation...${nc}\n"
 
-    ssh -t -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" bash <<EOF
-        cd $remote_tmp
-        sudo ./install.sh
-        cd /
-        rm -rf $remote_tmp
-EOF
+    # Installation ohne interaktives Terminal (-t entfernt)
+    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" "cd $remote_tmp && sudo bash ./install.sh && cd / && rm -rf $remote_tmp" 2>&1 | grep -v "unknown terminal"
 
     if [ $? -eq 0 ]; then
         echo -e "\n${green}✓ Installation erfolgreich${nc}"
@@ -2243,11 +2239,27 @@ main() {
         exit 1
     fi
 
-    # Zeige Banner und Menü
-    show_main_menu
-
-    # Konfigurationsmenü anzeigen
-    show_configuration_menu "$INSTALL_TYPE"
+    # Prüfe ob .install.conf existiert und INSTALL_TYPE gesetzt ist (Auto-Installation)
+    if [ -f ".install.conf" ]; then
+        source ".install.conf"
+        if [ -n "$INSTALL_TYPE" ]; then
+            echo -e "${green}✓ Auto-Installation: $INSTALL_TYPE${nc}"
+            # Konfiguration initialisieren und laden
+            init_config_vars
+            load_installation_config
+            # Direkt zur Installation springen (Menü überspringen)
+        else
+            # Zeige Banner und Menü
+            show_main_menu
+            # Konfigurationsmenü anzeigen
+            show_configuration_menu "$INSTALL_TYPE"
+        fi
+    else
+        # Zeige Banner und Menü
+        show_main_menu
+        # Konfigurationsmenü anzeigen
+        show_configuration_menu "$INSTALL_TYPE"
+    fi
 
     # Installationsverzeichnis einrichten (verwendet CONFIG_INSTALL_DIR aus Konfigurationsmenü)
     setup_installation_directory "$INSTALL_TYPE"
