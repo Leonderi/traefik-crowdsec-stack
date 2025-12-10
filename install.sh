@@ -419,7 +419,9 @@ configure_network() {
 
 # Installationskonfiguration speichern
 save_installation_config() {
-    local config_file=".install.conf"
+    # Source-Verzeichnis ermitteln (wo install.sh liegt)
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local config_file="${script_dir}/.install.conf"
 
     echo -e "${cyan}Speichere Installationskonfiguration...${nc}"
 
@@ -461,7 +463,9 @@ EOF
 
 # Installationskonfiguration laden
 load_installation_config() {
-    local config_file=".install.conf"
+    # Source-Verzeichnis ermitteln (wo install.sh liegt)
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local config_file="${script_dir}/.install.conf"
 
     if [ ! -f "$config_file" ]; then
         return 1
