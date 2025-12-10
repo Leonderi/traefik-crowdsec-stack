@@ -400,6 +400,69 @@ configure_network() {
 # Konfigurationsmenü
 # =============================================================================
 
+# Installationskonfiguration speichern
+save_installation_config() {
+    local config_file=".install.conf"
+
+    echo -e "${cyan}Speichere Installationskonfiguration...${nc}"
+
+    cat > "$config_file" << EOF
+# Traefik Installation Configuration
+# Generiert am: $(date '+%Y-%m-%d %H:%M:%S')
+# WARNUNG: Passwörter werden aus Sicherheitsgründen NICHT gespeichert!
+
+# Installationstyp und -verzeichnis
+INSTALL_TYPE=$INSTALL_TYPE
+INSTALL_DIR=$INSTALL_DIR
+
+# Netzwerk-Konfiguration
+CONFIG_IP_ENABLED=$CONFIG_IP_ENABLED
+CONFIG_IP=$CONFIG_IP
+CONFIG_CIDR=$CONFIG_CIDR
+CONFIG_GATEWAY=$CONFIG_GATEWAY
+CONFIG_DNS=$CONFIG_DNS
+
+# Hostname
+CONFIG_HOSTNAME_ENABLED=$CONFIG_HOSTNAME_ENABLED
+CONFIG_HOSTNAME=$CONFIG_HOSTNAME
+
+# Dashboard
+CONFIG_DASHBOARD_DOMAIN=$CONFIG_DASHBOARD_DOMAIN
+CONFIG_DASHBOARD_USER=$CONFIG_DASHBOARD_USER
+
+# Let's Encrypt
+CONFIG_ACME_EMAIL=$CONFIG_ACME_EMAIL
+
+# Backend-VMs (nur Frontend-Modus)
+CONFIG_BACKEND_IPS="${CONFIG_BACKEND_IPS[*]}"
+EOF
+
+    chmod 600 "$config_file"
+    echo -e "${green}✓ Konfiguration gespeichert in: $config_file${nc}"
+}
+
+# Installationskonfiguration laden
+load_installation_config() {
+    local config_file=".install.conf"
+
+    if [ ! -f "$config_file" ]; then
+        return 1
+    fi
+
+    echo -e "${cyan}Lade gespeicherte Installationskonfiguration...${nc}"
+
+    # Source the config file
+    source "$config_file"
+
+    # Backend IPs als Array laden
+    if [ -n "$CONFIG_BACKEND_IPS" ]; then
+        read -ra CONFIG_BACKEND_IPS <<< "$CONFIG_BACKEND_IPS"
+    fi
+
+    echo -e "${green}✓ Konfiguration geladen${nc}"
+    return 0
+}
+
 # Globale Konfigurationsvariablen initialisieren
 init_config_vars() {
     # IP-Konfiguration
@@ -816,6 +879,14 @@ show_configuration_menu() {
 load_existing_config() {
     local install_type=$1
 
+    # Zuerst versuchen .install.conf zu laden
+    if load_installation_config; then
+        echo -e "${green}✓ Gespeicherte Konfiguration wiederverwendet${nc}"
+        sleep 1
+        return 0
+    fi
+
+    # Fallback: Aus .env und config-Dateien auslesen
     if [ "$install_type" = "frontend" ]; then
         # Frontend-Konfiguration einlesen
         if [ -f ".env" ]; then
@@ -938,6 +1009,45 @@ check_and_install_docker() {
 }
 
 # =============================================================================
+# Let's Encrypt Zertifikat Wartefunktion
+# =============================================================================
+
+wait_for_letsencrypt_certificate() {
+    local domain=$1
+    local max_wait=60  # Maximum 60 Sekunden warten
+    local waited=0
+
+    echo -e "\n${cyan}Warte auf Let's Encrypt Zertifikat für ${domain}...${nc}"
+    echo -e "${yellow}Dies kann bis zu 60 Sekunden dauern.${nc}\n"
+
+    # Kurz warten damit Traefik starten kann
+    sleep 5
+
+    while [ $waited -lt $max_wait ]; do
+        # Versuche HTTPS-Verbindung und prüfe Zertifikat
+        if curl -sSf --connect-timeout 5 "https://${domain}" > /dev/null 2>&1; then
+            # Prüfe ob es ein Let's Encrypt Zertifikat ist
+            cert_issuer=$(echo | openssl s_client -servername "${domain}" -connect "${domain}:443" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+
+            if echo "$cert_issuer" | grep -q "Let's Encrypt"; then
+                echo -e "${green}✓ Let's Encrypt Zertifikat erfolgreich erstellt und aktiv!${nc}"
+                return 0
+            fi
+        fi
+
+        # Fortschrittsanzeige
+        echo -ne "${yellow}Warte... ($waited/$max_wait Sekunden)${nc}\r"
+        sleep 3
+        waited=$((waited + 3))
+    done
+
+    echo -e "\n${yellow}⚠ Zeitüberschreitung beim Warten auf das Zertifikat.${nc}"
+    echo -e "${yellow}Das Zertifikat wird möglicherweise noch im Hintergrund erstellt.${nc}"
+    echo -e "${yellow}Bitte laden Sie die Seite in ein paar Minuten neu.${nc}"
+    return 1
+}
+
+# =============================================================================
 # Frontend Traefik Installation
 # =============================================================================
 
@@ -1048,6 +1158,12 @@ install_frontend_traefik() {
         docker compose up -d
         step_done "Frontend Traefik gestartet"
 
+        # Warte auf Let's Encrypt Zertifikat
+        wait_for_letsencrypt_certificate "$CONFIG_DASHBOARD_DOMAIN"
+
+        # Konfiguration speichern
+        save_installation_config
+
         echo -e "\n${green}${bold}Installation abgeschlossen!${nc}\n"
         echo -e "${cyan}Dashboard erreichbar unter:${nc} https://$CONFIG_DASHBOARD_DOMAIN"
         echo -e "${cyan}Benutzername:${nc} $CONFIG_DASHBOARD_USER"
@@ -1058,6 +1174,10 @@ install_frontend_traefik() {
         echo -e "\n${cyan}Installationsverzeichnis:${nc} $(pwd)"
     else
         step_done "Start übersprungen"
+
+        # Konfiguration trotzdem speichern
+        save_installation_config
+
         echo -e "\n${yellow}Sie können den Stack später mit diesem Befehl starten:${nc}"
         echo -e "  cd $(pwd) && docker compose up -d"
     fi
