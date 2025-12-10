@@ -513,6 +513,138 @@ load_installation_config() {
     return 0
 }
 
+# =============================================================================
+# Backend-Management via SSH
+# =============================================================================
+
+# SSH-Key für Backend-Zugriff generieren/laden
+setup_ssh_key() {
+    local ssh_key_path="$HOME/.ssh/traefik_backend_rsa"
+
+    if [ -f "$ssh_key_path" ]; then
+        echo -e "${green}✓ SSH-Key existiert bereits: $ssh_key_path${nc}"
+        return 0
+    fi
+
+    echo -e "${cyan}Generiere SSH-Key für Backend-Zugriff...${nc}"
+    ssh-keygen -t rsa -b 4096 -f "$ssh_key_path" -N "" -C "traefik-backend-management"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${green}✓ SSH-Key erfolgreich erstellt${nc}"
+        return 0
+    else
+        echo -e "${red}✗ Fehler beim Erstellen des SSH-Keys${nc}"
+        return 1
+    fi
+}
+
+# SSH Public Key anzeigen
+show_ssh_public_key() {
+    local ssh_key_path="$HOME/.ssh/traefik_backend_rsa"
+
+    clear
+    echo -e "${bold}${cyan}SSH Public Key für Backend-Zugriff${nc}\n"
+
+    if [ ! -f "${ssh_key_path}.pub" ]; then
+        echo -e "${yellow}SSH-Key existiert noch nicht.${nc}"
+        if confirm "Möchten Sie den SSH-Key jetzt generieren?" "y"; then
+            setup_ssh_key
+        else
+            return 1
+        fi
+    fi
+
+    echo -e "${yellow}Kopieren Sie diesen Public Key beim Erstellen des LXC-Containers:${nc}\n"
+    echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}"
+    cat "${ssh_key_path}.pub"
+    echo -e "${green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}\n"
+
+    echo -e "${cyan}In Proxmox:${nc}"
+    echo -e "  1. LXC Container erstellen"
+    echo -e "  2. Bei 'SSH public keys' den obigen Key einfügen"
+    echo -e "  3. Container starten und DHCP-IP notieren\n"
+
+    read -p "Drücken Sie Enter wenn Sie fortfahren möchten..."
+}
+
+# Backend hinzufügen
+add_backend() {
+    clear
+    echo -e "${bold}${cyan}Backend hinzufügen${nc}\n"
+
+    # Hostname
+    local hostname
+    while true; do
+        read -p "Hostname des Backends (z.B. backend1): " hostname
+        if [ -n "$hostname" ]; then
+            break
+        fi
+        echo -e "${red}Hostname darf nicht leer sein${nc}"
+    done
+
+    # Ziel-IP
+    local target_ip
+    local cidr
+    while true; do
+        read -p "Ziel-IP-Adresse (z.B. 192.168.1.100): " target_ip
+        if [[ $target_ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            break
+        fi
+        echo -e "${red}Ungültige IP-Adresse${nc}"
+    done
+
+    read -p "CIDR [24]: " cidr
+    cidr=${cidr:-24}
+
+    # Domain auto-generieren
+    local auto_domain=""
+    if [ -n "$CONFIG_DASHBOARD_DOMAIN" ]; then
+        # Extrahiere domain.tld aus traefik.domain.tld
+        local base_domain=$(echo "$CONFIG_DASHBOARD_DOMAIN" | cut -d'.' -f2-)
+        auto_domain="traefik.${hostname}.${base_domain}"
+    fi
+
+    echo -e "\n${yellow}Automatisch generierte Domain: ${cyan}${auto_domain}${nc}"
+    read -p "Dashboard-Domain [$auto_domain]: " custom_domain
+    local domain=${custom_domain:-$auto_domain}
+
+    # Zu Arrays hinzufügen
+    BACKEND_HOSTNAMES+=("$hostname")
+    BACKEND_TARGET_IPS+=("$target_ip")
+    BACKEND_TARGET_CIDR+=("$cidr")
+    BACKEND_DHCP_IPS+=("")  # Wird später gefüllt
+    BACKEND_DOMAINS+=("$domain")
+    BACKEND_STATUS+=("pending")
+
+    echo -e "\n${green}✓ Backend hinzugefügt:${nc}"
+    echo -e "  Hostname: $hostname"
+    echo -e "  Ziel-IP: $target_ip/$cidr"
+    echo -e "  Dashboard: $domain"
+
+    sleep 2
+}
+
+# Backends auflisten
+list_backends() {
+    if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
+        echo -e "${yellow}Keine Backends konfiguriert${nc}"
+        return
+    fi
+
+    echo -e "${bold}Konfigurierte Backends:${nc}\n"
+    for i in "${!BACKEND_HOSTNAMES[@]}"; do
+        local status_color="${yellow}"
+        [ "${BACKEND_STATUS[$i]}" = "installed" ] && status_color="${green}"
+        [ "${BACKEND_STATUS[$i]}" = "configured" ] && status_color="${cyan}"
+
+        echo -e "${bold}$((i+1)).${nc} ${BACKEND_HOSTNAMES[$i]}"
+        echo -e "   Ziel-IP: ${BACKEND_TARGET_IPS[$i]}/${BACKEND_TARGET_CIDR[$i]}"
+        echo -e "   DHCP-IP: ${BACKEND_DHCP_IPS[$i]:-nicht gesetzt}"
+        echo -e "   Domain: ${BACKEND_DOMAINS[$i]}"
+        echo -e "   Status: ${status_color}${BACKEND_STATUS[$i]}${nc}\n"
+    done
+}
+
 # Globale Konfigurationsvariablen initialisieren
 init_config_vars() {
     # Installationsverzeichnis
@@ -543,6 +675,15 @@ init_config_vars() {
 
     # Backend-VMs (nur für Frontend-Modus)
     CONFIG_BACKEND_IPS=()
+
+    # Backend-Management (erweiterte Konfiguration)
+    BACKEND_HOSTNAMES=()       # Ziel-Hostname für Backend
+    BACKEND_TARGET_IPS=()      # Ziel-IP-Adresse
+    BACKEND_TARGET_CIDR=()     # CIDR (z.B. 24)
+    BACKEND_DHCP_IPS=()        # Aktuelle DHCP-IP (temporär)
+    BACKEND_DOMAINS=()         # Dashboard-Domain (auto-generiert oder custom)
+    BACKEND_STATUS=()          # Status: pending, configured, installed
+    BACKEND_SSH_USER="root"    # SSH-User für Backend-Zugriff
 }
 
 # Netplan-Konfiguration auslesen
