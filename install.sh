@@ -645,6 +645,280 @@ list_backends() {
     done
 }
 
+# Backend remote konfigurieren (IP + Hostname)
+configure_backend_remote() {
+    local index=$1
+
+    if [ -z "$index" ] || [ $index -ge ${#BACKEND_HOSTNAMES[@]} ]; then
+        echo -e "${red}Ungültiger Backend-Index${nc}"
+        return 1
+    fi
+
+    local hostname="${BACKEND_HOSTNAMES[$index]}"
+    local target_ip="${BACKEND_TARGET_IPS[$index]}"
+    local cidr="${BACKEND_TARGET_CIDR[$index]}"
+
+    clear
+    echo -e "${bold}${cyan}Backend konfigurieren: $hostname${nc}\n"
+
+    # DHCP-IP abfragen
+    local dhcp_ip
+    while true; do
+        read -p "Aktuelle DHCP-IP des Backends: " dhcp_ip
+        if [[ $dhcp_ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            break
+        fi
+        echo -e "${red}Ungültige IP-Adresse${nc}"
+    done
+
+    BACKEND_DHCP_IPS[$index]="$dhcp_ip"
+
+    # SSH-Verbindung testen
+    echo -e "\n${cyan}Teste SSH-Verbindung zu $dhcp_ip...${nc}"
+    local ssh_key="$HOME/.ssh/traefik_backend_rsa"
+
+    if ! ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no "${BACKEND_SSH_USER}@${dhcp_ip}" "echo 'SSH OK'" &>/dev/null; then
+        echo -e "${red}✗ SSH-Verbindung fehlgeschlagen${nc}"
+        echo -e "${yellow}Bitte prüfen Sie:${nc}"
+        echo -e "  • LXC Container läuft"
+        echo -e "  • SSH Public Key wurde beim Container-Setup eingefügt"
+        echo -e "  • IP-Adresse ist korrekt"
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return 1
+    fi
+    echo -e "${green}✓ SSH-Verbindung erfolgreich${nc}"
+
+    # Gateway ableiten
+    local gateway=$(echo "$target_ip" | awk -F. '{print $1"."$2"."$3".1"}')
+    read -p "Gateway [$gateway]: " custom_gateway
+    gateway=${custom_gateway:-$gateway}
+
+    # DNS
+    read -p "DNS-Server [8.8.8.8,1.1.1.1]: " dns_servers
+    dns_servers=${dns_servers:-8.8.8.8,1.1.1.1}
+
+    echo -e "\n${cyan}Konfiguriere Backend remote...${nc}"
+
+    # Netzwerk-Interface ermitteln
+    local interface=$(ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${dhcp_ip}" \
+        "ip -4 route | grep default | awk '{print \$5}' | head -n1" 2>/dev/null)
+
+    if [ -z "$interface" ]; then
+        interface="eth0"
+        echo -e "${yellow}⚠ Interface nicht erkannt, verwende: $interface${nc}"
+    fi
+
+    # Netplan-Konfiguration
+    local netplan_config="network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $interface:
+      dhcp4: false
+      addresses:
+        - $target_ip/$cidr
+      routes:
+        - to: default
+          via: $gateway
+      nameservers:
+        addresses: [$(echo $dns_servers | tr ',' ', ')]"
+
+    # Remote anwenden
+    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${dhcp_ip}" bash <<EOF
+        echo '$netplan_config' > /etc/netplan/01-netcfg.yaml
+        chmod 600 /etc/netplan/01-netcfg.yaml
+        hostnamectl set-hostname $hostname
+        echo "127.0.1.1 $hostname" >> /etc/hosts
+        netplan apply
+EOF
+
+    if [ $? -eq 0 ]; then
+        echo -e "${green}✓ Backend konfiguriert${nc}"
+        echo -e "${yellow}⚠ Neue IP: $target_ip${nc}"
+        BACKEND_STATUS[$index]="configured"
+        sleep 2
+        return 0
+    else
+        echo -e "${red}✗ Fehler${nc}"
+        read -p "Enter..."
+        return 1
+    fi
+}
+
+# Backend remote installieren
+install_backend_remote() {
+    local index=$1
+
+    if [ -z "$index" ] || [ $index -ge ${#BACKEND_HOSTNAMES[@]} ]; then
+        echo -e "${red}Ungültiger Index${nc}"
+        return 1
+    fi
+
+    if [ "${BACKEND_STATUS[$index]}" != "configured" ]; then
+        echo -e "${red}Backend muss erst konfiguriert werden${nc}"
+        read -p "Enter..."
+        return 1
+    fi
+
+    local hostname="${BACKEND_HOSTNAMES[$index]}"
+    local target_ip="${BACKEND_TARGET_IPS[$index]}"
+    local domain="${BACKEND_DOMAINS[$index]}"
+
+    clear
+    echo -e "${bold}${cyan}Backend installieren: $hostname${nc}\n"
+
+    local ssh_key="$HOME/.ssh/traefik_backend_rsa"
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local remote_tmp="/tmp/traefik-install"
+
+    echo -e "${cyan}[1/5] Erstelle temporäres Verzeichnis...${nc}"
+    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" "mkdir -p $remote_tmp"
+
+    echo -e "${cyan}[2/5] Kopiere Dateien...${nc}"
+    rsync -avz -e "ssh -i $ssh_key" \
+        --exclude='.git' \
+        --exclude='data/*/certs/*' \
+        --exclude='.install.conf' \
+        "$script_dir/" "${BACKEND_SSH_USER}@${target_ip}:${remote_tmp}/"
+
+    echo -e "${cyan}[3/5] Erstelle Remote-Konfiguration...${nc}"
+
+    local remote_config="INSTALL_TYPE=backend-proxy
+CONFIG_BASE_DIR=/opt/containers
+CONFIG_INSTALL_DIR=/opt/containers/traefik-backend
+CONFIG_DASHBOARD_DOMAIN=$domain
+CONFIG_DASHBOARD_USER=$CONFIG_DASHBOARD_USER
+CONFIG_DASHBOARD_PASS_HASH=$CONFIG_DASHBOARD_PASS
+CONFIG_IP_ENABLED=false
+CONFIG_HOSTNAME_ENABLED=false"
+
+    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" \
+        "echo '$remote_config' > ${remote_tmp}/.install.conf && chmod 600 ${remote_tmp}/.install.conf"
+
+    echo -e "${cyan}[4/5] Starte Installation...${nc}\n"
+
+    ssh -t -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" bash <<EOF
+        cd $remote_tmp
+        sudo ./install.sh
+        cd /
+        rm -rf $remote_tmp
+EOF
+
+    if [ $? -eq 0 ]; then
+        echo -e "\n${green}✓ Installation erfolgreich${nc}"
+        BACKEND_STATUS[$index]="installed"
+
+        echo -e "${cyan}[5/5] Aktualisiere Frontend...${nc}"
+        update_frontend_http_provider
+
+        echo -e "${green}✓ Abgeschlossen${nc}"
+        echo -e "${cyan}Dashboard:${nc} https://$domain"
+        sleep 3
+        return 0
+    else
+        echo -e "\n${red}✗ Fehler${nc}"
+        read -p "Enter..."
+        return 1
+    fi
+}
+
+# Frontend HTTP Provider aktualisieren
+update_frontend_http_provider() {
+    local traefik_config="$CONFIG_INSTALL_DIR/data/traefik-frontend/traefik.yml"
+
+    if [ ! -f "$traefik_config" ]; then
+        echo -e "${yellow}⚠ traefik.yml nicht gefunden${nc}"
+        return 1
+    fi
+
+    local endpoints=""
+    for i in "${!BACKEND_HOSTNAMES[@]}"; do
+        if [ "${BACKEND_STATUS[$i]}" = "installed" ]; then
+            endpoints="$endpoints\n    - \"http://${BACKEND_TARGET_IPS[$i]}/api\""
+        fi
+    done
+
+    if [ -z "$endpoints" ]; then
+        return 1
+    fi
+
+    sed -i '/# http:/,/# *pollInterval:/c\  http:\n    endpoints:'"$endpoints"'\n    pollInterval: "10s"' "$traefik_config"
+
+    if [ "$(docker ps -q -f name=traefik-frontend)" ]; then
+        (cd "$CONFIG_INSTALL_DIR" && docker compose restart traefik-frontend)
+    fi
+}
+
+# Backend-Management-Menü
+manage_backends() {
+    while true; do
+        clear
+        echo -e "${bold}${cyan}Backend-Management${nc}\n"
+
+        list_backends
+
+        echo -e "\n${cyan}Aktionen:${nc}"
+        echo -e "${cyan}1)${nc} SSH Public Key anzeigen"
+        echo -e "${cyan}2)${nc} Backend hinzufügen"
+        echo -e "${cyan}3)${nc} Backend konfigurieren"
+        echo -e "${cyan}4)${nc} Backend installieren"
+        echo -e "${cyan}5)${nc} Backend entfernen"
+        echo -e "${cyan}0)${nc} Zurück\n"
+
+        read -p "Auswahl: " choice
+
+        case $choice in
+            1) show_ssh_public_key ;;
+            2) add_backend ;;
+            3)
+                if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
+                    echo -e "${yellow}Keine Backends${nc}"
+                    sleep 2
+                else
+                    read -p "Backend-Nummer: " num
+                    configure_backend_remote $((num - 1))
+                fi
+                ;;
+            4)
+                if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
+                    echo -e "${yellow}Keine Backends${nc}"
+                    sleep 2
+                else
+                    read -p "Backend-Nummer: " num
+                    install_backend_remote $((num - 1))
+                fi
+                ;;
+            5)
+                if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
+                    echo -e "${yellow}Keine Backends${nc}"
+                    sleep 2
+                else
+                    read -p "Backend-Nummer: " num
+                    local idx=$((num - 1))
+                    if [ $idx -ge 0 ] && [ $idx -lt ${#BACKEND_HOSTNAMES[@]} ]; then
+                        unset 'BACKEND_HOSTNAMES[$idx]'
+                        unset 'BACKEND_TARGET_IPS[$idx]'
+                        unset 'BACKEND_TARGET_CIDR[$idx]'
+                        unset 'BACKEND_DHCP_IPS[$idx]'
+                        unset 'BACKEND_DOMAINS[$idx]'
+                        unset 'BACKEND_STATUS[$idx]'
+                        BACKEND_HOSTNAMES=("${BACKEND_HOSTNAMES[@]}")
+                        BACKEND_TARGET_IPS=("${BACKEND_TARGET_IPS[@]}")
+                        BACKEND_TARGET_CIDR=("${BACKEND_TARGET_CIDR[@]}")
+                        BACKEND_DHCP_IPS=("${BACKEND_DHCP_IPS[@]}")
+                        BACKEND_DOMAINS=("${BACKEND_DOMAINS[@]}")
+                        BACKEND_STATUS=("${BACKEND_STATUS[@]}")
+                        echo -e "${green}✓ Entfernt${nc}"
+                        sleep 2
+                    fi
+                fi
+                ;;
+            0) return 0 ;;
+            *) echo -e "${yellow}Ungültig${nc}"; sleep 1 ;;
+        esac
+    done
+}
+
 # Globale Konfigurationsvariablen initialisieren
 init_config_vars() {
     # Installationsverzeichnis
@@ -1150,7 +1424,7 @@ show_configuration_menu() {
             5) configure_dashboard_user ;;
             6)
                 if [ "$install_type" = "frontend" ]; then
-                    configure_backend_vms
+                    manage_backends
                 else
                     echo -e "${yellow}Ungültige Auswahl${nc}"
                     sleep 1
