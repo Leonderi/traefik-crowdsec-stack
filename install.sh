@@ -424,6 +424,7 @@ save_installation_config() {
     local config_file="${script_dir}/.install.conf"
 
     echo -e "${cyan}Speichere Installationskonfiguration...${nc}"
+    echo -e "${cyan}Speicherort: $config_file${nc}"
 
     cat > "$config_file" << EOF
 # Traefik Installation Configuration
@@ -463,6 +464,12 @@ EOF
 
     chmod 600 "$config_file"
     echo -e "${green}✓ Konfiguration gespeichert in: $config_file${nc}"
+
+    # Alte .install.conf im aktuellen Verzeichnis löschen (falls vorhanden)
+    if [ -f ".install.conf" ] && [ "$(realpath .install.conf)" != "$(realpath $config_file)" ]; then
+        rm -f ".install.conf"
+        echo -e "${yellow}ℹ Alte .install.conf aus Installationsverzeichnis entfernt${nc}"
+    fi
 }
 
 # Installationskonfiguration laden
