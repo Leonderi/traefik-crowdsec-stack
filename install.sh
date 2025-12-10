@@ -2319,17 +2319,19 @@ main() {
         exit 1
     fi
 
-    # Prüfe ob .install.conf existiert und INSTALL_TYPE gesetzt ist (Auto-Installation)
+    # Prüfe ob .install.conf existiert und INSTALL_TYPE gesetzt ist
+    # Auto-Installation nur für backend-proxy (Remote-Installationen)
     if [ -f ".install.conf" ]; then
         source ".install.conf"
-        if [ -n "$INSTALL_TYPE" ]; then
+        # Auto-Installation NUR für backend-proxy (wird von Frontend remote gestartet)
+        if [ "$INSTALL_TYPE" = "backend-proxy" ]; then
             echo -e "${green}✓ Auto-Installation: $INSTALL_TYPE${nc}"
             # Konfiguration initialisieren und laden
             init_config_vars
             load_installation_config
             # Direkt zur Installation springen (Menü überspringen)
         else
-            # Zeige Banner und Menü
+            # Für frontend und backend-standard: Zeige Menü (auch wenn .install.conf existiert)
             show_main_menu
             # Konfigurationsmenü anzeigen
             show_configuration_menu "$INSTALL_TYPE"
