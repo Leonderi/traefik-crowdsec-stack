@@ -1496,12 +1496,12 @@ show_configuration_menu() {
             echo -e "${cyan}5)${nc} Dashboard-Benutzer      ${yellow}[Nicht konfiguriert]${nc}"
         fi
 
-        # Backend-VMs (nur Frontend-Modus)
+        # Backend-Management (nur Frontend-Modus)
         if [ "$install_type" = "frontend" ]; then
-            if [ ${#CONFIG_BACKEND_IPS[@]} -gt 0 ]; then
-                echo -e "${cyan}6)${nc} Backend-VMs             ${green}[${#CONFIG_BACKEND_IPS[@]} VM(s): ${CONFIG_BACKEND_IPS[*]}]${nc}"
+            if [ ${#BACKEND_HOSTNAMES[@]} -gt 0 ]; then
+                echo -e "${cyan}6)${nc} Backend-Management      ${green}[${#BACKEND_HOSTNAMES[@]} Backend(s): ${BACKEND_HOSTNAMES[*]}]${nc}"
             else
-                echo -e "${cyan}6)${nc} Backend-VMs             ${yellow}[Keine konfiguriert]${nc}"
+                echo -e "${cyan}6)${nc} Backend-Management      ${yellow}[Keine konfiguriert]${nc}"
             fi
         fi
 
