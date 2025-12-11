@@ -746,7 +746,7 @@ configure_backend_remote() {
     # SSH-Verbindung testen
     echo -e "\n${cyan}Teste SSH-Verbindung zu $dhcp_ip (Key: $ssh_key)...${nc}"
 
-    if ! ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no "${BACKEND_SSH_USER}@${dhcp_ip}" "echo 'SSH OK'" &>/dev/null; then
+    if ! ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${dhcp_ip}" "echo 'SSH OK'" &>/dev/null; then
         echo -e "${red}✗ SSH-Verbindung fehlgeschlagen${nc}"
         echo -e "${yellow}Bitte prüfen Sie:${nc}"
         echo -e "  • LXC Container läuft"
@@ -769,7 +769,7 @@ configure_backend_remote() {
     echo -e "\n${cyan}Konfiguriere Backend remote...${nc}"
 
     # Netzwerk-Interface ermitteln
-    local interface=$(ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${dhcp_ip}" \
+    local interface=$(ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${dhcp_ip}" \
         "ip -4 route | grep default | awk '{print \$5}' | head -n1" 2>/dev/null)
 
     if [ -z "$interface" ]; then
@@ -793,7 +793,7 @@ configure_backend_remote() {
         addresses: [$(echo $dns_servers | tr ',' ', ')]"
 
     # Remote anwenden
-    ssh -i "$ssh_key" -o ServerAliveInterval=5 -o ServerAliveCountMax=1 "${BACKEND_SSH_USER}@${dhcp_ip}" "bash -s" <<EOF
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=5 -o ServerAliveCountMax=1 "${BACKEND_SSH_USER}@${dhcp_ip}" "bash -s" <<EOF
         echo '$netplan_config' > /etc/netplan/01-netcfg.yaml
         chmod 600 /etc/netplan/01-netcfg.yaml
         hostnamectl set-hostname $hostname
@@ -816,7 +816,7 @@ EOF
     echo -e "${cyan}Teste Verbindung zur neuen IP: $target_ip${nc}"
     local retries=0
     while [ $retries -lt 10 ]; do
-        if ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no "${BACKEND_SSH_USER}@${target_ip}" "echo 'OK'" &>/dev/null; then
+        if ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" "echo 'OK'" &>/dev/null; then
             echo -e "${green}✓ Backend konfiguriert und erreichbar${nc}"
             echo -e "${green}✓ Neue IP: $target_ip${nc}"
             BACKEND_STATUS[$index]="configured"
@@ -862,10 +862,10 @@ install_backend_remote() {
     local remote_tmp="/tmp/traefik-install"
 
     echo -e "${cyan}[1/5] Erstelle temporäres Verzeichnis...${nc}"
-    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" "mkdir -p $remote_tmp"
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" "mkdir -p $remote_tmp"
 
     echo -e "${cyan}[2/5] Kopiere Dateien...${nc}"
-    rsync -avz -e "ssh -i $ssh_key" \
+    rsync -avz -e "ssh -i $ssh_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
         --exclude='.git' \
         --exclude='data/*/certs/*' \
         --exclude='.install.conf' \
@@ -882,13 +882,13 @@ CONFIG_DASHBOARD_PASS_HASH=$CONFIG_DASHBOARD_PASS
 CONFIG_IP_ENABLED=false
 CONFIG_HOSTNAME_ENABLED=false"
 
-    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" \
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" \
         "echo '$remote_config' > ${remote_tmp}/.install.conf && chmod 600 ${remote_tmp}/.install.conf"
 
     echo -e "${cyan}[4/5] Starte Installation...${nc}\n"
 
     # Installation ohne interaktives Terminal (-t entfernt)
-    ssh -i "$ssh_key" "${BACKEND_SSH_USER}@${target_ip}" "cd $remote_tmp && sudo bash ./install.sh && cd / && rm -rf $remote_tmp" 2>&1 | grep -v "unknown terminal"
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" "cd $remote_tmp && sudo bash ./install.sh && cd / && rm -rf $remote_tmp" 2>&1 | grep -v "unknown terminal"
 
     if [ $? -eq 0 ]; then
         echo -e "\n${green}✓ Installation erfolgreich${nc}"
