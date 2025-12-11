@@ -1585,11 +1585,23 @@ show_configuration_menu() {
         "backend-proxy") mode_name="Backend Stack (Proxy-Modus)" ;;
     esac
 
-    # Konfigurationsvariablen initialisieren
-    init_config_vars
+    # Bestehende Konfiguration einlesen falls vorhanden (VOR init!)
+    local config_loaded=false
+    if load_existing_config "$install_type"; then
+        config_loaded=true
+    fi
 
-    # Bestehende Konfiguration einlesen falls vorhanden
-    load_existing_config "$install_type"
+    # Konfigurationsvariablen initialisieren (nur fehlende Werte)
+    # Wenn Konfiguration geladen wurde, nur Defaults für leere Werte setzen
+    if [ "$config_loaded" = false ]; then
+        init_config_vars
+    else
+        # Nur fehlende Werte initialisieren, bestehende behalten
+        CONFIG_BASE_DIR="${CONFIG_BASE_DIR:-/opt/containers}"
+        CONFIG_DNS="${CONFIG_DNS:-8.8.8.8,1.1.1.1}"
+        CONFIG_HOSTNAME="${CONFIG_HOSTNAME:-$(hostname)}"
+        # WICHTIG: CONFIG_DASHBOARD_PASS NICHT überschreiben!
+    fi
 
     while true; do
         show_banner
