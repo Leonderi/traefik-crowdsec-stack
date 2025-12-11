@@ -985,6 +985,48 @@ update_frontend_http_provider() {
     fi
 }
 
+# SSH-Verbindung zu Backend herstellen
+ssh_to_backend() {
+    local index=$1
+
+    if [ -z "$index" ] || [ $index -ge ${#BACKEND_HOSTNAMES[@]} ]; then
+        echo -e "${red}Ungültiger Backend-Index${nc}"
+        sleep 2
+        return 1
+    fi
+
+    local hostname="${BACKEND_HOSTNAMES[$index]}"
+    local target_ip="${BACKEND_TARGET_IPS[$index]}"
+    local dhcp_ip="${BACKEND_DHCP_IPS[$index]}"
+    local ssh_key="${BACKEND_SSH_KEYS[$index]}"
+    local status="${BACKEND_STATUS[$index]}"
+
+    # Bestimme welche IP verwendet werden soll
+    local connect_ip=""
+    if [ "$status" = "configured" ] || [ "$status" = "installed" ]; then
+        connect_ip="$target_ip"
+    elif [ -n "$dhcp_ip" ]; then
+        connect_ip="$dhcp_ip"
+    else
+        echo -e "${red}✗ Keine IP-Adresse für Backend verfügbar${nc}"
+        echo -e "${yellow}Hinweis: Konfigurieren Sie das Backend zuerst (Option 3)${nc}"
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return 1
+    fi
+
+    clear
+    echo -e "${bold}${cyan}SSH-Verbindung zu: $hostname${nc}"
+    echo -e "${cyan}IP: $connect_ip${nc}"
+    echo -e "${cyan}SSH-Key: $ssh_key${nc}\n"
+    echo -e "${yellow}Drücken Sie Ctrl+D oder tippen Sie 'exit' um die Verbindung zu beenden${nc}\n"
+
+    # Stelle SSH-Verbindung her
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${connect_ip}"
+
+    echo -e "\n${cyan}Verbindung beendet${nc}"
+    read -p "Drücken Sie Enter um fortzufahren..."
+}
+
 # Backend-Management-Menü
 manage_backends() {
     while true; do
@@ -998,7 +1040,8 @@ manage_backends() {
         echo -e "${cyan}2)${nc} Backend hinzufügen"
         echo -e "${cyan}3)${nc} Backend konfigurieren"
         echo -e "${cyan}4)${nc} Backend installieren"
-        echo -e "${cyan}5)${nc} Backend entfernen"
+        echo -e "${cyan}5)${nc} SSH-Verbindung zu Backend"
+        echo -e "${cyan}6)${nc} Backend entfernen"
         echo -e "${cyan}0)${nc} Zurück\n"
 
         read -p "Auswahl: " choice
@@ -1030,6 +1073,15 @@ manage_backends() {
                     sleep 2
                 else
                     read -p "Backend-Nummer: " num
+                    ssh_to_backend $((num - 1))
+                fi
+                ;;
+            6)
+                if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
+                    echo -e "${yellow}Keine Backends${nc}"
+                    sleep 2
+                else
+                    read -p "Backend-Nummer: " num
                     local idx=$((num - 1))
                     if [ $idx -ge 0 ] && [ $idx -lt ${#BACKEND_HOSTNAMES[@]} ]; then
                         unset 'BACKEND_HOSTNAMES[$idx]'
@@ -1038,12 +1090,16 @@ manage_backends() {
                         unset 'BACKEND_DHCP_IPS[$idx]'
                         unset 'BACKEND_DOMAINS[$idx]'
                         unset 'BACKEND_STATUS[$idx]'
+                        unset 'BACKEND_SSH_KEYS[$idx]'
+                        unset 'BACKEND_INSTALL_DIRS[$idx]'
                         BACKEND_HOSTNAMES=("${BACKEND_HOSTNAMES[@]}")
                         BACKEND_TARGET_IPS=("${BACKEND_TARGET_IPS[@]}")
                         BACKEND_TARGET_CIDR=("${BACKEND_TARGET_CIDR[@]}")
                         BACKEND_DHCP_IPS=("${BACKEND_DHCP_IPS[@]}")
                         BACKEND_DOMAINS=("${BACKEND_DOMAINS[@]}")
                         BACKEND_STATUS=("${BACKEND_STATUS[@]}")
+                        BACKEND_SSH_KEYS=("${BACKEND_SSH_KEYS[@]}")
+                        BACKEND_INSTALL_DIRS=("${BACKEND_INSTALL_DIRS[@]}")
                         echo -e "${green}✓ Entfernt${nc}"
                         sleep 2
                     fi
