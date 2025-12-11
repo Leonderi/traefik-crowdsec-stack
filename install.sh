@@ -503,7 +503,7 @@ EOF
 
 # Backend-Management (erweiterte Konfiguration)
 EOF
-        # Jedes Backend-Array separat speichern (mit | als Trenner)
+        # Jedes Backend-Array separat speichern (mit Leerzeichen als Trenner)
         printf "BACKEND_HOSTNAMES='%s'\n" "${BACKEND_HOSTNAMES[*]}" >> "$config_file"
         printf "BACKEND_TARGET_IPS='%s'\n" "${BACKEND_TARGET_IPS[*]}" >> "$config_file"
         printf "BACKEND_TARGET_CIDR='%s'\n" "${BACKEND_TARGET_CIDR[*]}" >> "$config_file"
@@ -511,6 +511,7 @@ EOF
         printf "BACKEND_DOMAINS='%s'\n" "${BACKEND_DOMAINS[*]}" >> "$config_file"
         printf "BACKEND_STATUS='%s'\n" "${BACKEND_STATUS[*]}" >> "$config_file"
         printf "BACKEND_SSH_KEYS='%s'\n" "${BACKEND_SSH_KEYS[*]}" >> "$config_file"
+        printf "BACKEND_INSTALL_DIRS='%s'\n" "${BACKEND_INSTALL_DIRS[*]}" >> "$config_file"
     fi
 
     chmod 600 "$config_file"
@@ -569,6 +570,7 @@ load_installation_config() {
         read -ra BACKEND_DOMAINS <<< "$BACKEND_DOMAINS"
         read -ra BACKEND_STATUS <<< "$BACKEND_STATUS"
         read -ra BACKEND_SSH_KEYS <<< "$BACKEND_SSH_KEYS"
+        read -ra BACKEND_INSTALL_DIRS <<< "$BACKEND_INSTALL_DIRS"
         echo -e "${green}✓ ${#BACKEND_HOSTNAMES[@]} Backend(s) wiederhergestellt${nc}"
     fi
 
@@ -708,6 +710,12 @@ add_backend() {
     read -p "Dashboard-Domain [$auto_domain]: " custom_domain
     local domain=${custom_domain:-$auto_domain}
 
+    # Installationsverzeichnis
+    local default_install_dir="/opt/containers/traefik-backend"
+    echo -e "\n${yellow}Installationsverzeichnis auf Backend:${nc}"
+    read -p "Verzeichnis [$default_install_dir]: " custom_install_dir
+    local install_dir=${custom_install_dir:-$default_install_dir}
+
     # Zu Arrays hinzufügen
     BACKEND_HOSTNAMES+=("$hostname")
     BACKEND_TARGET_IPS+=("$target_ip")
@@ -716,11 +724,13 @@ add_backend() {
     BACKEND_DOMAINS+=("$domain")
     BACKEND_STATUS+=("pending")
     BACKEND_SSH_KEYS+=("$ssh_key_path")  # Unique SSH key per backend
+    BACKEND_INSTALL_DIRS+=("$install_dir")  # Installationsverzeichnis
 
     echo -e "\n${green}✓ Backend hinzugefügt:${nc}"
     echo -e "  Hostname: $hostname"
     echo -e "  Ziel-IP: $target_ip/$cidr"
     echo -e "  Dashboard: $domain"
+    echo -e "  Install-Dir: $install_dir"
     echo -e "  SSH-Key: $ssh_key_path"
 
     sleep 2
@@ -743,6 +753,7 @@ list_backends() {
         echo -e "   Ziel-IP: ${BACKEND_TARGET_IPS[$i]}/${BACKEND_TARGET_CIDR[$i]}"
         echo -e "   DHCP-IP: ${BACKEND_DHCP_IPS[$i]:-nicht gesetzt}"
         echo -e "   Domain: ${BACKEND_DOMAINS[$i]}"
+        echo -e "   Install-Dir: ${BACKEND_INSTALL_DIRS[$i]:-/opt/containers/traefik-backend}"
         echo -e "   SSH-Key: ${BACKEND_SSH_KEYS[$i]}"
         echo -e "   Status: ${status_color}${BACKEND_STATUS[$i]}${nc}\n"
     done
@@ -887,10 +898,12 @@ install_backend_remote() {
     local target_ip="${BACKEND_TARGET_IPS[$index]}"
     local domain="${BACKEND_DOMAINS[$index]}"
     local ssh_key="${BACKEND_SSH_KEYS[$index]}"  # Per-backend SSH key
+    local install_dir="${BACKEND_INSTALL_DIRS[$index]:-/opt/containers/traefik-backend}"  # Installationsverzeichnis
 
     clear
     echo -e "${bold}${cyan}Backend installieren: $hostname${nc}\n"
-    echo -e "${cyan}SSH-Key: $ssh_key${nc}\n"
+    echo -e "${cyan}SSH-Key: $ssh_key${nc}"
+    echo -e "${cyan}Install-Dir: $install_dir${nc}\n"
 
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local remote_tmp="/tmp/traefik-install"
@@ -907,9 +920,12 @@ install_backend_remote() {
 
     echo -e "${cyan}[3/5] Erstelle Remote-Konfiguration...${nc}"
 
+    # Base-Dir aus Install-Dir ableiten
+    local base_dir=$(dirname "$install_dir")
+
     local remote_config="INSTALL_TYPE=backend-proxy
-CONFIG_BASE_DIR=/opt/containers
-CONFIG_INSTALL_DIR=/opt/containers/traefik-backend
+CONFIG_BASE_DIR=$base_dir
+CONFIG_INSTALL_DIR=$install_dir
 CONFIG_DASHBOARD_DOMAIN=$domain
 CONFIG_DASHBOARD_USER=$CONFIG_DASHBOARD_USER
 CONFIG_DASHBOARD_PASS_HASH=$CONFIG_DASHBOARD_PASS
@@ -1078,6 +1094,7 @@ init_config_vars() {
     BACKEND_DOMAINS=()         # Dashboard-Domain (auto-generiert oder custom)
     BACKEND_STATUS=()          # Status: pending, configured, installed
     BACKEND_SSH_KEYS=()        # SSH-Key-Pfad pro Backend (Security-Isolation)
+    BACKEND_INSTALL_DIRS=()    # Installationsverzeichnis pro Backend
     BACKEND_SSH_USER="root"    # SSH-User für Backend-Zugriff
 }
 
