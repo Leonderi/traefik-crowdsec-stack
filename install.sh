@@ -650,23 +650,23 @@ setup_backend_user() {
     local backend_ip=$3
     local username=${4:-traefik-mgmt}  # Default username
 
-    echo -e "\n${cyan}Richte dedizierten Benutzer '$username' auf Backend '$hostname' ein...${nc}"
+    echo -e "\n${cyan}Richte dedizierten Benutzer '$username' auf Backend '$hostname' ein...${nc}" >&2
 
     # 1. Prüfe ob User bereits existiert
     if ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${backend_ip} "id $username" &>/dev/null; then
-        echo -e "${green}✓ Benutzer '$username' existiert bereits${nc}"
+        echo -e "${green}✓ Benutzer '$username' existiert bereits${nc}" >&2
 
         # Prüfe ob SSH-Login funktioniert
         if ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${username}@${backend_ip} "echo OK" &>/dev/null; then
-            echo -e "${green}✓ SSH-Zugriff für '$username' funktioniert${nc}"
+            echo -e "${green}✓ SSH-Zugriff für '$username' funktioniert${nc}" >&2
             echo "$username"
             return 0
         fi
-        echo -e "${yellow}⚠ SSH-Zugriff muss noch eingerichtet werden${nc}"
+        echo -e "${yellow}⚠ SSH-Zugriff muss noch eingerichtet werden${nc}" >&2
     fi
 
     # 2. Erstelle User via root-SSH
-    echo -e "${cyan}Erstelle Benutzer und richte Berechtigungen ein...${nc}"
+    echo -e "${cyan}Erstelle Benutzer und richte Berechtigungen ein...${nc}" >&2
     ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${backend_ip} "bash -s" <<EOF
 set -e
 
@@ -704,11 +704,11 @@ echo "OK"
 EOF
 
     if [ $? -eq 0 ]; then
-        echo -e "${green}✓ Benutzer '$username' erfolgreich eingerichtet${nc}"
+        echo -e "${green}✓ Benutzer '$username' erfolgreich eingerichtet${nc}" >&2
 
         # 3. Teste SSH-Verbindung mit neuem User
         if ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${username}@${backend_ip} "echo OK" &>/dev/null; then
-            echo -e "${green}✓ SSH-Zugriff als '$username' funktioniert${nc}"
+            echo -e "${green}✓ SSH-Zugriff als '$username' funktioniert${nc}" >&2
 
             # 4. Optional: Root SSH-Login deaktivieren (Security)
             if confirm "Root SSH-Login deaktivieren? (empfohlen für Sicherheit)" "y"; then
@@ -716,20 +716,20 @@ EOF
                     "sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && systemctl reload sshd" 2>/dev/null
 
                 if [ $? -eq 0 ]; then
-                    echo -e "${green}✓ Root SSH-Login deaktiviert${nc}"
+                    echo -e "${green}✓ Root SSH-Login deaktiviert${nc}" >&2
                 else
-                    echo -e "${yellow}⚠ Konnte Root SSH-Login nicht deaktivieren${nc}"
+                    echo -e "${yellow}⚠ Konnte Root SSH-Login nicht deaktivieren${nc}" >&2
                 fi
             fi
 
             echo "$username"
             return 0
         else
-            echo -e "${red}✗ SSH-Zugriff als '$username' fehlgeschlagen${nc}"
+            echo -e "${red}✗ SSH-Zugriff als '$username' fehlgeschlagen${nc}" >&2
             return 1
         fi
     else
-        echo -e "${red}✗ Fehler beim Einrichten des Benutzers${nc}"
+        echo -e "${red}✗ Fehler beim Einrichten des Benutzers${nc}" >&2
         return 1
     fi
 }
