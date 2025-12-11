@@ -595,17 +595,29 @@ load_installation_config() {
 # =============================================================================
 
 # Log-Funktion für Backend-Operationen
-BACKEND_LOG_DIR="$HOME/.traefik-stack-logs"
-mkdir -p "$BACKEND_LOG_DIR"
+# Logs im Script-Verzeichnis unter ./logs/
+get_log_dir() {
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    echo "${script_dir}/logs"
+}
 
 log_backend_operation() {
     local hostname=$1
     local operation=$2
     local message=$3
-    local log_file="$BACKEND_LOG_DIR/backend-${hostname}-$(date +%Y%m%d).log"
 
+    local log_dir=$(get_log_dir)
+    mkdir -p "$log_dir"
+
+    local log_file="${log_dir}/backend-${hostname}-$(date +%Y%m%d).log"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
     echo "[$timestamp] [$operation] $message" >> "$log_file"
+
+    # Debug: Bestätigung dass Log geschrieben wurde
+    if [ ! -f "$log_file" ]; then
+        echo -e "${red}✗ WARNUNG: Log-Datei konnte nicht erstellt werden: $log_file${nc}" >&2
+    fi
 
     # Auch auf stdout ausgeben
     echo "$message"
@@ -1046,7 +1058,8 @@ install_backend_remote() {
     echo -e "${cyan}Install-Dir: $install_dir${nc}"
 
     # Log-Datei Info
-    local log_file="$BACKEND_LOG_DIR/backend-${hostname}-$(date +%Y%m%d).log"
+    local log_dir=$(get_log_dir)
+    local log_file="${log_dir}/backend-${hostname}-$(date +%Y%m%d).log"
     echo -e "${cyan}Log-Datei: $log_file${nc}\n"
 
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1291,6 +1304,67 @@ ssh_to_backend() {
     read -p "Drücken Sie Enter um fortzufahren..."
 }
 
+# Backend-Logs anzeigen
+show_backend_logs() {
+    if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
+        echo -e "${yellow}Keine Backends konfiguriert${nc}"
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return
+    fi
+
+    clear
+    echo -e "${bold}${cyan}Backend-Logs${nc}\n"
+
+    local log_dir=$(get_log_dir)
+
+    if [ ! -d "$log_dir" ]; then
+        echo -e "${yellow}Log-Verzeichnis existiert nicht: $log_dir${nc}"
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return
+    fi
+
+    echo -e "${cyan}Log-Verzeichnis: $log_dir${nc}\n"
+
+    # Zeige alle verfügbaren Log-Dateien
+    local logs=($(ls -t "$log_dir"/backend-*.log 2>/dev/null))
+
+    if [ ${#logs[@]} -eq 0 ]; then
+        echo -e "${yellow}Keine Log-Dateien gefunden${nc}"
+        echo -e "${cyan}Logs werden bei Backend-Installationen automatisch erstellt${nc}"
+        read -p "Drücken Sie Enter um fortzufahren..."
+        return
+    fi
+
+    echo -e "${green}Verfügbare Log-Dateien:${nc}\n"
+    for i in "${!logs[@]}"; do
+        local log_file="${logs[$i]}"
+        local filename=$(basename "$log_file")
+        local size=$(du -h "$log_file" | cut -f1)
+        local lines=$(wc -l < "$log_file")
+        echo -e "${cyan}$((i+1)).${nc} $filename (${size}, ${lines} Zeilen)"
+    done
+
+    echo -e "\n${cyan}0)${nc} Zurück\n"
+    read -p "Log-Datei zum Anzeigen (Nummer): " choice
+
+    if [ "$choice" = "0" ]; then
+        return
+    fi
+
+    if [ "$choice" -ge 1 ] && [ "$choice" -le "${#logs[@]}" ]; then
+        local selected_log="${logs[$((choice-1))]}"
+        clear
+        echo -e "${bold}${cyan}Log: $(basename "$selected_log")${nc}\n"
+        echo -e "${yellow}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}"
+        cat "$selected_log"
+        echo -e "${yellow}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${nc}"
+    else
+        echo -e "${red}Ungültige Auswahl${nc}"
+    fi
+
+    read -p "Drücken Sie Enter um fortzufahren..."
+}
+
 # Backend-Management-Menü
 manage_backends() {
     while true; do
@@ -1307,6 +1381,7 @@ manage_backends() {
         echo -e "${cyan}5)${nc} SSH-Verbindung zu Backend"
         echo -e "${cyan}6)${nc} Container-Status anzeigen"
         echo -e "${cyan}7)${nc} Backend entfernen"
+        echo -e "${cyan}8)${nc} Installations-Logs anzeigen"
         echo -e "${cyan}0)${nc} Zurück\n"
 
         read -p "Auswahl: " choice
@@ -1373,6 +1448,7 @@ manage_backends() {
                     fi
                 fi
                 ;;
+            8) show_backend_logs ;;
             0) return 0 ;;
             *) echo -e "${yellow}Ungültig${nc}"; sleep 1 ;;
         esac
