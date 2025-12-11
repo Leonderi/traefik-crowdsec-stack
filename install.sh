@@ -512,6 +512,7 @@ EOF
         printf "BACKEND_STATUS='%s'\n" "${BACKEND_STATUS[*]}" >> "$config_file"
         printf "BACKEND_SSH_KEYS='%s'\n" "${BACKEND_SSH_KEYS[*]}" >> "$config_file"
         printf "BACKEND_INSTALL_DIRS='%s'\n" "${BACKEND_INSTALL_DIRS[*]}" >> "$config_file"
+        printf "BACKEND_SSH_USERS='%s'\n" "${BACKEND_SSH_USERS[*]}" >> "$config_file"
     fi
 
     chmod 600 "$config_file"
@@ -571,6 +572,7 @@ load_installation_config() {
         read -ra BACKEND_STATUS <<< "$BACKEND_STATUS"
         read -ra BACKEND_SSH_KEYS <<< "$BACKEND_SSH_KEYS"
         read -ra BACKEND_INSTALL_DIRS <<< "$BACKEND_INSTALL_DIRS"
+        read -ra BACKEND_SSH_USERS <<< "$BACKEND_SSH_USERS"
         echo -e "${green}✓ ${#BACKEND_HOSTNAMES[@]} Backend(s) wiederhergestellt${nc}"
     fi
 
@@ -610,6 +612,97 @@ setup_ssh_key() {
         return 0
     else
         echo -e "${red}✗ Fehler beim Erstellen des SSH-Keys${nc}" >&2
+        return 1
+    fi
+}
+
+# Dedicated User auf Backend erstellen (Security Best Practice)
+setup_backend_user() {
+    local hostname=$1
+    local ssh_key=$2
+    local backend_ip=$3
+    local username=${4:-traefik-mgmt}  # Default username
+
+    echo -e "\n${cyan}Richte dedizierten Benutzer '$username' auf Backend '$hostname' ein...${nc}"
+
+    # 1. Prüfe ob User bereits existiert
+    if ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${backend_ip} "id $username" &>/dev/null; then
+        echo -e "${green}✓ Benutzer '$username' existiert bereits${nc}"
+
+        # Prüfe ob SSH-Login funktioniert
+        if ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${username}@${backend_ip} "echo OK" &>/dev/null; then
+            echo -e "${green}✓ SSH-Zugriff für '$username' funktioniert${nc}"
+            echo "$username"
+            return 0
+        fi
+        echo -e "${yellow}⚠ SSH-Zugriff muss noch eingerichtet werden${nc}"
+    fi
+
+    # 2. Erstelle User via root-SSH
+    echo -e "${cyan}Erstelle Benutzer und richte Berechtigungen ein...${nc}"
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${backend_ip} "bash -s" <<EOF
+set -e
+
+# User erstellen falls nicht vorhanden
+if ! id $username &>/dev/null; then
+    useradd -m -s /bin/bash $username
+    echo -e "${green}✓ Benutzer $username erstellt${nc}" >&2
+fi
+
+# Docker-Gruppe sicherstellen
+if ! getent group docker &>/dev/null; then
+    groupadd docker
+fi
+
+# User zu Gruppen hinzufügen
+usermod -aG docker $username
+usermod -aG sudo $username
+
+# Sudo ohne Passwort (für Installation benötigt)
+echo "$username ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$username
+chmod 0440 /etc/sudoers.d/$username
+
+# SSH-Verzeichnis für User erstellen
+mkdir -p /home/$username/.ssh
+chmod 700 /home/$username/.ssh
+
+# Public Key kopieren (von root authorized_keys)
+if [ -f /root/.ssh/authorized_keys ]; then
+    cp /root/.ssh/authorized_keys /home/$username/.ssh/authorized_keys
+    chmod 600 /home/$username/.ssh/authorized_keys
+    chown -R $username:$username /home/$username/.ssh
+fi
+
+echo "OK"
+EOF
+
+    if [ $? -eq 0 ]; then
+        echo -e "${green}✓ Benutzer '$username' erfolgreich eingerichtet${nc}"
+
+        # 3. Teste SSH-Verbindung mit neuem User
+        if ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${username}@${backend_ip} "echo OK" &>/dev/null; then
+            echo -e "${green}✓ SSH-Zugriff als '$username' funktioniert${nc}"
+
+            # 4. Optional: Root SSH-Login deaktivieren (Security)
+            if confirm "Root SSH-Login deaktivieren? (empfohlen für Sicherheit)" "y"; then
+                ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${backend_ip} \
+                    "sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && systemctl reload sshd" 2>/dev/null
+
+                if [ $? -eq 0 ]; then
+                    echo -e "${green}✓ Root SSH-Login deaktiviert${nc}"
+                else
+                    echo -e "${yellow}⚠ Konnte Root SSH-Login nicht deaktivieren${nc}"
+                fi
+            fi
+
+            echo "$username"
+            return 0
+        else
+            echo -e "${red}✗ SSH-Zugriff als '$username' fehlgeschlagen${nc}"
+            return 1
+        fi
+    else
+        echo -e "${red}✗ Fehler beim Einrichten des Benutzers${nc}"
         return 1
     fi
 }
@@ -725,6 +818,7 @@ add_backend() {
     BACKEND_STATUS+=("pending")
     BACKEND_SSH_KEYS+=("$ssh_key_path")  # Unique SSH key per backend
     BACKEND_INSTALL_DIRS+=("$install_dir")  # Installationsverzeichnis
+    BACKEND_SSH_USERS+=("")  # Wird während Konfiguration erstellt
 
     echo -e "\n${green}✓ Backend hinzugefügt:${nc}"
     echo -e "  Hostname: $hostname"
@@ -755,6 +849,7 @@ list_backends() {
         echo -e "   Domain: ${BACKEND_DOMAINS[$i]}"
         echo -e "   Install-Dir: ${BACKEND_INSTALL_DIRS[$i]:-/opt/containers/traefik-backend}"
         echo -e "   SSH-Key: ${BACKEND_SSH_KEYS[$i]}"
+        echo -e "   SSH-User: ${BACKEND_SSH_USERS[$i]:-noch nicht konfiguriert}"
         echo -e "   Status: ${status_color}${BACKEND_STATUS[$i]}${nc}\n"
     done
 }
@@ -788,10 +883,10 @@ configure_backend_remote() {
 
     BACKEND_DHCP_IPS[$index]="$dhcp_ip"
 
-    # SSH-Verbindung testen
+    # SSH-Verbindung testen (initially as root, user is created later)
     echo -e "\n${cyan}Teste SSH-Verbindung zu $dhcp_ip (Key: $ssh_key)...${nc}"
 
-    if ! ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${dhcp_ip}" "echo 'SSH OK'" &>/dev/null; then
+    if ! ssh -i "$ssh_key" -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${dhcp_ip} "echo 'SSH OK'" &>/dev/null; then
         echo -e "${red}✗ SSH-Verbindung fehlgeschlagen${nc}"
         echo -e "${yellow}Bitte prüfen Sie:${nc}"
         echo -e "  • LXC Container läuft"
@@ -813,8 +908,8 @@ configure_backend_remote() {
 
     echo -e "\n${cyan}Konfiguriere Backend remote...${nc}"
 
-    # Netzwerk-Interface ermitteln
-    local interface=$(ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${dhcp_ip}" \
+    # Netzwerk-Interface ermitteln (as root during initial setup)
+    local interface=$(ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${dhcp_ip} \
         "ip -4 route | grep default | awk '{print \$5}' | head -n1" 2>/dev/null)
 
     if [ -z "$interface" ]; then
@@ -837,8 +932,8 @@ configure_backend_remote() {
       nameservers:
         addresses: [$(echo $dns_servers | tr ',' ', ')]"
 
-    # Remote anwenden
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=5 -o ServerAliveCountMax=1 "${BACKEND_SSH_USER}@${dhcp_ip}" "bash -s" <<EOF
+    # Remote anwenden (as root during initial setup)
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=5 -o ServerAliveCountMax=1 root@${dhcp_ip} "bash -s" <<EOF
         echo '$netplan_config' > /etc/netplan/01-netcfg.yaml
         chmod 600 /etc/netplan/01-netcfg.yaml
         hostnamectl set-hostname $hostname
@@ -861,9 +956,20 @@ EOF
     echo -e "${cyan}Teste Verbindung zur neuen IP: $target_ip${nc}"
     local retries=0
     while [ $retries -lt 10 ]; do
-        if ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" "echo 'OK'" &>/dev/null; then
+        if ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${target_ip} "echo 'OK'" &>/dev/null; then
             echo -e "${green}✓ Backend konfiguriert und erreichbar${nc}"
             echo -e "${green}✓ Neue IP: $target_ip${nc}"
+
+            # Dedicated User einrichten (Security Best Practice)
+            local backend_user=$(setup_backend_user "$hostname" "$ssh_key" "$target_ip")
+            if [ $? -eq 0 ] && [ -n "$backend_user" ]; then
+                BACKEND_SSH_USERS[$index]="$backend_user"
+                echo -e "${green}✓ SSH-User: $backend_user${nc}"
+            else
+                echo -e "${yellow}⚠ Dedicated User konnte nicht eingerichtet werden, verwende root${nc}"
+                BACKEND_SSH_USERS[$index]="root"
+            fi
+
             BACKEND_STATUS[$index]="configured"
             sleep 2
             return 0
@@ -899,24 +1005,26 @@ install_backend_remote() {
     local domain="${BACKEND_DOMAINS[$index]}"
     local ssh_key="${BACKEND_SSH_KEYS[$index]}"  # Per-backend SSH key
     local install_dir="${BACKEND_INSTALL_DIRS[$index]:-/opt/containers/traefik-backend}"  # Installationsverzeichnis
+    local ssh_user="${BACKEND_SSH_USERS[$index]:-root}"  # Dedicated user (fallback to root)
 
     clear
     echo -e "${bold}${cyan}Backend installieren: $hostname${nc}\n"
     echo -e "${cyan}SSH-Key: $ssh_key${nc}"
+    echo -e "${cyan}SSH-User: $ssh_user${nc}"
     echo -e "${cyan}Install-Dir: $install_dir${nc}\n"
 
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local remote_tmp="/tmp/traefik-install"
 
     echo -e "${cyan}[1/5] Erstelle temporäres Verzeichnis...${nc}"
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" "mkdir -p $remote_tmp"
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" "mkdir -p $remote_tmp"
 
     echo -e "${cyan}[2/5] Kopiere Dateien...${nc}"
     rsync -avz -e "ssh -i $ssh_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
         --exclude='.git' \
         --exclude='data/*/certs/*' \
         --exclude='.install.conf' \
-        "$script_dir/" "${BACKEND_SSH_USER}@${target_ip}:${remote_tmp}/"
+        "$script_dir/" "${ssh_user}@${target_ip}:${remote_tmp}/"
 
     echo -e "${cyan}[3/5] Erstelle Remote-Konfiguration...${nc}"
 
@@ -932,13 +1040,13 @@ CONFIG_DASHBOARD_PASS_HASH=$CONFIG_DASHBOARD_PASS
 CONFIG_IP_ENABLED=false
 CONFIG_HOSTNAME_ENABLED=false"
 
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" \
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" \
         "echo '$remote_config' > ${remote_tmp}/.install.conf && chmod 600 ${remote_tmp}/.install.conf"
 
     echo -e "${cyan}[4/5] Starte Installation...${nc}\n"
 
     # Installation ohne interaktives Terminal (-t entfernt)
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${target_ip}" "cd $remote_tmp && sudo bash ./install.sh && cd / && rm -rf $remote_tmp" 2>&1 | grep -v "unknown terminal"
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" "cd $remote_tmp && sudo bash ./install.sh && cd / && rm -rf $remote_tmp" 2>&1 | grep -v "unknown terminal"
 
     if [ $? -eq 0 ]; then
         echo -e "\n${green}✓ Installation erfolgreich${nc}"
@@ -1012,6 +1120,7 @@ show_container_status() {
             local ssh_key="${BACKEND_SSH_KEYS[$i]}"
             local status="${BACKEND_STATUS[$i]}"
             local install_dir="${BACKEND_INSTALL_DIRS[$i]:-/opt/containers/traefik-backend}"
+            local ssh_user="${BACKEND_SSH_USERS[$i]:-root}"
 
             echo -e "${bold}${green}=== BACKEND: $hostname ===${nc}"
 
@@ -1029,8 +1138,8 @@ show_container_status() {
             fi
 
             # Hole Container-Status via SSH
-            echo -e "${cyan}IP: $connect_ip | Status: $status${nc}"
-            local containers=$(ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${connect_ip}" \
+            echo -e "${cyan}IP: $connect_ip | Status: $status | User: $ssh_user${nc}"
+            local containers=$(ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${connect_ip}" \
                 "cd $install_dir 2>/dev/null && docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E '(NAMES|traefik|crowdsec|socket-proxy|bouncer)'" 2>/dev/null)
 
             if [ -n "$containers" ]; then
@@ -1061,6 +1170,7 @@ ssh_to_backend() {
     local dhcp_ip="${BACKEND_DHCP_IPS[$index]}"
     local ssh_key="${BACKEND_SSH_KEYS[$index]}"
     local status="${BACKEND_STATUS[$index]}"
+    local ssh_user="${BACKEND_SSH_USERS[$index]:-root}"
 
     # Bestimme welche IP verwendet werden soll
     local connect_ip=""
@@ -1078,11 +1188,12 @@ ssh_to_backend() {
     clear
     echo -e "${bold}${cyan}SSH-Verbindung zu: $hostname${nc}"
     echo -e "${cyan}IP: $connect_ip${nc}"
+    echo -e "${cyan}User: $ssh_user${nc}"
     echo -e "${cyan}SSH-Key: $ssh_key${nc}\n"
     echo -e "${yellow}Drücken Sie Ctrl+D oder tippen Sie 'exit' um die Verbindung zu beenden${nc}\n"
 
     # Stelle SSH-Verbindung her
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${connect_ip}"
+    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${connect_ip}"
 
     echo -e "\n${cyan}Verbindung beendet${nc}"
     read -p "Drücken Sie Enter um fortzufahren..."
@@ -1216,7 +1327,7 @@ init_config_vars() {
     BACKEND_STATUS=()          # Status: pending, configured, installed
     BACKEND_SSH_KEYS=()        # SSH-Key-Pfad pro Backend (Security-Isolation)
     BACKEND_INSTALL_DIRS=()    # Installationsverzeichnis pro Backend
-    BACKEND_SSH_USER="root"    # SSH-User für Backend-Zugriff
+    BACKEND_SSH_USERS=()       # SSH-Username pro Backend (Security: dedicated user statt root)
 }
 
 # Netplan-Konfiguration auslesen
