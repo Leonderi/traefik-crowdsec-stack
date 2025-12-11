@@ -497,6 +497,22 @@ EOF
         printf "\n# Dashboard-Passwort (bcrypt-Hash)\nCONFIG_DASHBOARD_PASS_HASH=%s\n" "$CONFIG_DASHBOARD_PASS" >> "$config_file"
     fi
 
+    # Backend-Konfiguration speichern (erweiterte Arrays)
+    if [ ${#BACKEND_HOSTNAMES[@]} -gt 0 ]; then
+        cat >> "$config_file" << 'EOF'
+
+# Backend-Management (erweiterte Konfiguration)
+EOF
+        # Jedes Backend-Array separat speichern (mit | als Trenner)
+        printf "BACKEND_HOSTNAMES='%s'\n" "${BACKEND_HOSTNAMES[*]}" >> "$config_file"
+        printf "BACKEND_TARGET_IPS='%s'\n" "${BACKEND_TARGET_IPS[*]}" >> "$config_file"
+        printf "BACKEND_TARGET_CIDR='%s'\n" "${BACKEND_TARGET_CIDR[*]}" >> "$config_file"
+        printf "BACKEND_DHCP_IPS='%s'\n" "${BACKEND_DHCP_IPS[*]}" >> "$config_file"
+        printf "BACKEND_DOMAINS='%s'\n" "${BACKEND_DOMAINS[*]}" >> "$config_file"
+        printf "BACKEND_STATUS='%s'\n" "${BACKEND_STATUS[*]}" >> "$config_file"
+        printf "BACKEND_SSH_KEYS='%s'\n" "${BACKEND_SSH_KEYS[*]}" >> "$config_file"
+    fi
+
     chmod 600 "$config_file"
     echo -e "${green}✓ Konfiguration gespeichert in: $config_file${nc}"
 
@@ -542,6 +558,18 @@ load_installation_config() {
     # Passwort-Hash wiederherstellen
     if [ -n "$CONFIG_DASHBOARD_PASS_HASH" ]; then
         CONFIG_DASHBOARD_PASS="$CONFIG_DASHBOARD_PASS_HASH"
+    fi
+
+    # Backend-Arrays wiederherstellen
+    if [ -n "$BACKEND_HOSTNAMES" ]; then
+        read -ra BACKEND_HOSTNAMES <<< "$BACKEND_HOSTNAMES"
+        read -ra BACKEND_TARGET_IPS <<< "$BACKEND_TARGET_IPS"
+        read -ra BACKEND_TARGET_CIDR <<< "$BACKEND_TARGET_CIDR"
+        read -ra BACKEND_DHCP_IPS <<< "$BACKEND_DHCP_IPS"
+        read -ra BACKEND_DOMAINS <<< "$BACKEND_DOMAINS"
+        read -ra BACKEND_STATUS <<< "$BACKEND_STATUS"
+        read -ra BACKEND_SSH_KEYS <<< "$BACKEND_SSH_KEYS"
+        echo -e "${green}✓ ${#BACKEND_HOSTNAMES[@]} Backend(s) wiederhergestellt${nc}"
     fi
 
     echo -e "${green}✓ Konfiguration geladen${nc}"
