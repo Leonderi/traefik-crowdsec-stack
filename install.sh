@@ -985,6 +985,67 @@ update_frontend_http_provider() {
     fi
 }
 
+# Container-Status-Übersicht
+show_container_status() {
+    clear
+    echo -e "${bold}${cyan}Container-Status-Übersicht${nc}\n"
+
+    # Frontend Status
+    echo -e "${bold}${green}=== FRONTEND (lokal) ===${nc}"
+    if [ -d "$CONFIG_INSTALL_DIR" ]; then
+        cd "$CONFIG_INSTALL_DIR"
+        if docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(NAMES|traefik-frontend|crowdsec|socket-proxy|bouncer)" ; then
+            echo ""
+        else
+            echo -e "${yellow}Keine Container gefunden${nc}\n"
+        fi
+    else
+        echo -e "${yellow}Installationsverzeichnis nicht gefunden${nc}\n"
+    fi
+
+    # Backend Status
+    if [ ${#BACKEND_HOSTNAMES[@]} -gt 0 ]; then
+        for i in "${!BACKEND_HOSTNAMES[@]}"; do
+            local hostname="${BACKEND_HOSTNAMES[$i]}"
+            local target_ip="${BACKEND_TARGET_IPS[$i]}"
+            local dhcp_ip="${BACKEND_DHCP_IPS[$i]}"
+            local ssh_key="${BACKEND_SSH_KEYS[$i]}"
+            local status="${BACKEND_STATUS[$i]}"
+            local install_dir="${BACKEND_INSTALL_DIRS[$i]:-/opt/containers/traefik-backend}"
+
+            echo -e "${bold}${green}=== BACKEND: $hostname ===${nc}"
+
+            # Bestimme IP
+            local connect_ip=""
+            if [ "$status" = "configured" ] || [ "$status" = "installed" ]; then
+                connect_ip="$target_ip"
+            elif [ -n "$dhcp_ip" ]; then
+                connect_ip="$dhcp_ip"
+            fi
+
+            if [ -z "$connect_ip" ]; then
+                echo -e "${yellow}Nicht konfiguriert${nc}\n"
+                continue
+            fi
+
+            # Hole Container-Status via SSH
+            echo -e "${cyan}IP: $connect_ip | Status: $status${nc}"
+            local containers=$(ssh -i "$ssh_key" -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${BACKEND_SSH_USER}@${connect_ip}" \
+                "cd $install_dir 2>/dev/null && docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E '(NAMES|traefik|crowdsec|socket-proxy|bouncer)'" 2>/dev/null)
+
+            if [ -n "$containers" ]; then
+                echo "$containers"
+                echo ""
+            else
+                echo -e "${yellow}SSH-Verbindung fehlgeschlagen oder keine Container${nc}\n"
+            fi
+        done
+    fi
+
+    echo -e "${cyan}Drücken Sie Enter um fortzufahren...${nc}"
+    read
+}
+
 # SSH-Verbindung zu Backend herstellen
 ssh_to_backend() {
     local index=$1
@@ -1041,7 +1102,8 @@ manage_backends() {
         echo -e "${cyan}3)${nc} Backend konfigurieren"
         echo -e "${cyan}4)${nc} Backend installieren"
         echo -e "${cyan}5)${nc} SSH-Verbindung zu Backend"
-        echo -e "${cyan}6)${nc} Backend entfernen"
+        echo -e "${cyan}6)${nc} Container-Status anzeigen"
+        echo -e "${cyan}7)${nc} Backend entfernen"
         echo -e "${cyan}0)${nc} Zurück\n"
 
         read -p "Auswahl: " choice
@@ -1077,6 +1139,9 @@ manage_backends() {
                 fi
                 ;;
             6)
+                show_container_status
+                ;;
+            7)
                 if [ ${#BACKEND_HOSTNAMES[@]} -eq 0 ]; then
                     echo -e "${yellow}Keine Backends${nc}"
                     sleep 2
