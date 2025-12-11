@@ -495,6 +495,9 @@ EOF
     # Dashboard-Passwort separat schreiben (verhindert Variable-Expansion von $ in bcrypt-Hash)
     if [ -n "$CONFIG_DASHBOARD_PASS" ]; then
         printf "\n# Dashboard-Passwort (bcrypt-Hash)\nCONFIG_DASHBOARD_PASS_HASH=%s\n" "$CONFIG_DASHBOARD_PASS" >> "$config_file"
+        echo -e "${green}✓ Passwort gespeichert (${#CONFIG_DASHBOARD_PASS} Zeichen)${nc}"
+    else
+        echo -e "${yellow}⚠ Kein Passwort zum Speichern vorhanden${nc}"
     fi
 
     # Backend-Konfiguration speichern (erweiterte Arrays)
@@ -513,6 +516,10 @@ EOF
         printf "BACKEND_SSH_KEYS='%s'\n" "${BACKEND_SSH_KEYS[*]}" >> "$config_file"
         printf "BACKEND_INSTALL_DIRS='%s'\n" "${BACKEND_INSTALL_DIRS[*]}" >> "$config_file"
         printf "BACKEND_SSH_USERS='%s'\n" "${BACKEND_SSH_USERS[*]}" >> "$config_file"
+        echo -e "${green}✓ ${#BACKEND_HOSTNAMES[@]} Backend(s) gespeichert${nc}"
+        echo -e "${cyan}  → Backends: ${BACKEND_HOSTNAMES[*]}${nc}"
+    else
+        echo -e "${yellow}ℹ Keine Backends zum Speichern vorhanden${nc}"
     fi
 
     chmod 600 "$config_file"
@@ -574,6 +581,9 @@ load_installation_config() {
         read -ra BACKEND_INSTALL_DIRS <<< "$BACKEND_INSTALL_DIRS"
         read -ra BACKEND_SSH_USERS <<< "$BACKEND_SSH_USERS"
         echo -e "${green}✓ ${#BACKEND_HOSTNAMES[@]} Backend(s) wiederhergestellt${nc}"
+        echo -e "${cyan}  → Backends: ${BACKEND_HOSTNAMES[*]}${nc}"
+    else
+        echo -e "${yellow}ℹ Keine Backend-Konfiguration in .install.conf gefunden${nc}"
     fi
 
     echo -e "${green}✓ Konfiguration geladen${nc}"
@@ -583,6 +593,23 @@ load_installation_config() {
 # =============================================================================
 # Backend-Management via SSH
 # =============================================================================
+
+# Log-Funktion für Backend-Operationen
+BACKEND_LOG_DIR="$HOME/.traefik-stack-logs"
+mkdir -p "$BACKEND_LOG_DIR"
+
+log_backend_operation() {
+    local hostname=$1
+    local operation=$2
+    local message=$3
+    local log_file="$BACKEND_LOG_DIR/backend-${hostname}-$(date +%Y%m%d).log"
+
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$operation] $message" >> "$log_file"
+
+    # Auch auf stdout ausgeben
+    echo "$message"
+}
 
 # SSH-Key für Backend-Zugriff generieren/laden
 setup_ssh_key() {
@@ -1011,20 +1038,38 @@ install_backend_remote() {
     echo -e "${bold}${cyan}Backend installieren: $hostname${nc}\n"
     echo -e "${cyan}SSH-Key: $ssh_key${nc}"
     echo -e "${cyan}SSH-User: $ssh_user${nc}"
-    echo -e "${cyan}Install-Dir: $install_dir${nc}\n"
+    echo -e "${cyan}Install-Dir: $install_dir${nc}"
+
+    # Log-Datei Info
+    local log_file="$BACKEND_LOG_DIR/backend-${hostname}-$(date +%Y%m%d).log"
+    echo -e "${cyan}Log-Datei: $log_file${nc}\n"
 
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local remote_tmp="/tmp/traefik-install"
 
+    log_backend_operation "$hostname" "INSTALL" "=== Installation gestartet ===" >/dev/null
+    log_backend_operation "$hostname" "INSTALL" "Target: ${ssh_user}@${target_ip}" >/dev/null
+    log_backend_operation "$hostname" "INSTALL" "Install-Dir: $install_dir" >/dev/null
+
     echo -e "${cyan}[1/5] Erstelle temporäres Verzeichnis...${nc}"
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" "mkdir -p $remote_tmp"
+    if ! ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" "mkdir -p $remote_tmp" 2>&1 | tee -a "$log_file"; then
+        log_backend_operation "$hostname" "ERROR" "Fehler beim Erstellen des Temp-Verzeichnisses" >/dev/null
+        echo -e "${red}✗ Fehler - Details siehe Log${nc}"
+        read -p "Enter..."
+        return 1
+    fi
 
     echo -e "${cyan}[2/5] Kopiere Dateien...${nc}"
-    rsync -avz -e "ssh -i $ssh_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+    if ! rsync -avz -e "ssh -i $ssh_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
         --exclude='.git' \
         --exclude='data/*/certs/*' \
         --exclude='.install.conf' \
-        "$script_dir/" "${ssh_user}@${target_ip}:${remote_tmp}/"
+        "$script_dir/" "${ssh_user}@${target_ip}:${remote_tmp}/" 2>&1 | tee -a "$log_file"; then
+        log_backend_operation "$hostname" "ERROR" "Fehler beim Kopieren der Dateien" >/dev/null
+        echo -e "${red}✗ Fehler - Details siehe Log${nc}"
+        read -p "Enter..."
+        return 1
+    fi
 
     echo -e "${cyan}[3/5] Erstelle Remote-Konfiguration...${nc}"
 
@@ -1037,18 +1082,28 @@ CONFIG_INSTALL_DIR=$install_dir
 CONFIG_DASHBOARD_DOMAIN=$domain
 CONFIG_DASHBOARD_USER=$CONFIG_DASHBOARD_USER
 CONFIG_DASHBOARD_PASS_HASH=$CONFIG_DASHBOARD_PASS
+CONFIG_ACME_STAGING=$CONFIG_ACME_STAGING
 CONFIG_IP_ENABLED=false
 CONFIG_HOSTNAME_ENABLED=false"
 
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" \
-        "echo '$remote_config' > ${remote_tmp}/.install.conf && chmod 600 ${remote_tmp}/.install.conf"
+    log_backend_operation "$hostname" "CONFIG" "Remote-Konfiguration erstellt" >/dev/null
+
+    if ! ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" \
+        "echo '$remote_config' > ${remote_tmp}/.install.conf && chmod 600 ${remote_tmp}/.install.conf" 2>&1 | tee -a "$log_file"; then
+        log_backend_operation "$hostname" "ERROR" "Fehler beim Erstellen der Remote-Konfiguration" >/dev/null
+        echo -e "${red}✗ Fehler - Details siehe Log${nc}"
+        read -p "Enter..."
+        return 1
+    fi
 
     echo -e "${cyan}[4/5] Starte Installation...${nc}\n"
+    log_backend_operation "$hostname" "INSTALL" "Starte Remote-Installation..." >/dev/null
 
-    # Installation ohne interaktives Terminal (-t entfernt)
-    ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" "cd $remote_tmp && sudo bash ./install.sh && cd / && rm -rf $remote_tmp" 2>&1 | grep -v "unknown terminal"
+    # Installation ohne interaktives Terminal (-t entfernt), vollständiges Logging
+    if ssh -i "$ssh_key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${ssh_user}@${target_ip}" \
+        "cd $remote_tmp && sudo bash ./install.sh 2>&1 && cd / && rm -rf $remote_tmp" 2>&1 | tee -a "$log_file" | grep -v "unknown terminal"; then
 
-    if [ $? -eq 0 ]; then
+        log_backend_operation "$hostname" "SUCCESS" "Installation erfolgreich abgeschlossen" >/dev/null
         echo -e "\n${green}✓ Installation erfolgreich${nc}"
         BACKEND_STATUS[$index]="installed"
 
@@ -1060,7 +1115,9 @@ CONFIG_HOSTNAME_ENABLED=false"
         sleep 3
         return 0
     else
-        echo -e "\n${red}✗ Fehler${nc}"
+        log_backend_operation "$hostname" "ERROR" "Installation fehlgeschlagen (Exit-Code: $?)" >/dev/null
+        echo -e "\n${red}✗ Installation fehlgeschlagen${nc}"
+        echo -e "${yellow}Prüfen Sie das Log für Details: $log_file${nc}"
         read -p "Enter..."
         return 1
     fi
@@ -2146,6 +2203,21 @@ install_frontend_traefik() {
         echo '{}' > "$acme_file"
         chmod 600 "$acme_file"
         echo -e "${yellow}⚠ Neue Zertifikate werden beim nächsten Start angefordert${nc}"
+    fi
+
+    # Warnung bei bestehenden Zertifikaten im Production-Modus
+    if [ -f "$acme_file" ] && [ -s "$acme_file" ] && [ "$CONFIG_ACME_STAGING" != true ]; then
+        echo -e "${yellow}════════════════════════════════════════════════════════════${nc}"
+        echo -e "${yellow}⚠  WARNUNG: Bestehende Let's Encrypt Production-Zertifikate${nc}"
+        echo -e "${yellow}════════════════════════════════════════════════════════════${nc}"
+        echo -e "Eine acme.json-Datei existiert bereits."
+        echo -e "Bei Neuinstallation können Rate-Limits auftreten (5/Woche)."
+        echo -e ""
+        echo -e "${cyan}Empfehlung:${nc}"
+        echo -e "  • Für Tests: Wechseln Sie zu Staging-Modus (Menü Option 8)"
+        echo -e "  • Bestehende Installation: Lassen Sie acme.json unverändert"
+        echo -e "${yellow}════════════════════════════════════════════════════════════${nc}"
+        sleep 3
     fi
 
     # Let's Encrypt Staging-Modus
