@@ -1825,6 +1825,33 @@ install_frontend_traefik() {
     sed -i "s/ACME_EMAIL=.*/ACME_EMAIL=$CONFIG_ACME_EMAIL/g" .env
     sed -i "s/email: \".*\"/email: \"$CONFIG_ACME_EMAIL\"/g" data/traefik-frontend/traefik.yml
 
+    # Let's Encrypt Modus-Wechsel erkennen und acme.json zurücksetzen
+    local acme_file="data/traefik-frontend/certs/acme.json"
+    local mode_changed=false
+
+    # Prüfe ob Modus gewechselt wurde
+    if [ -f "data/traefik-frontend/traefik.yml" ]; then
+        local has_castaging=$(grep -c "caServer.*staging" data/traefik-frontend/traefik.yml 2>/dev/null || echo "0")
+
+        if [ "$CONFIG_ACME_STAGING" = true ] && [ "$has_castaging" -eq 0 ]; then
+            mode_changed=true
+            echo -e "${yellow}⚠ Wechsel zu Staging-Modus erkannt${nc}"
+        elif [ "$CONFIG_ACME_STAGING" != true ] && [ "$has_castaging" -gt 0 ]; then
+            mode_changed=true
+            echo -e "${yellow}⚠ Wechsel zu Production-Modus erkannt${nc}"
+        fi
+    fi
+
+    # Bei Modus-Wechsel: acme.json sichern und neu erstellen
+    if [ "$mode_changed" = true ] && [ -f "$acme_file" ] && [ -s "$acme_file" ]; then
+        local backup_file="${acme_file}.backup.$(date +%Y%m%d-%H%M%S)"
+        echo -e "${cyan}Sichere alte Zertifikate nach: $backup_file${nc}"
+        cp "$acme_file" "$backup_file"
+        echo '{}' > "$acme_file"
+        chmod 600 "$acme_file"
+        echo -e "${yellow}⚠ Neue Zertifikate werden beim nächsten Start angefordert${nc}"
+    fi
+
     # Let's Encrypt Staging-Modus
     if [ "$CONFIG_ACME_STAGING" = true ]; then
         # Staging caServer hinzufügen
@@ -1841,11 +1868,16 @@ install_frontend_traefik() {
 
     # Dashboard-Authentifizierung
     if [ -n "$CONFIG_DASHBOARD_PASS" ]; then
-        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$CONFIG_DASHBOARD_PASS\"|g" compose/traefik.yml
+        # Escape special characters for sed (besonders wichtig für bcrypt hashes)
+        local escaped_pass=$(printf '%s\n' "$CONFIG_DASHBOARD_PASS" | sed 's/[&/\]/\\&/g')
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$escaped_pass\"|g" compose/traefik.yml
+        echo -e "${green}✓ Dashboard-Authentifizierung konfiguriert (Benutzer: $CONFIG_DASHBOARD_USER)${nc}"
     elif [ -n "$CONFIG_DASHBOARD_PASS_PLAIN" ]; then
         # Falls htpasswd vorher nicht verfügbar war, jetzt Hash generieren
         DASHBOARD_PASS=$(htpasswd -nb "$CONFIG_DASHBOARD_USER" "$CONFIG_DASHBOARD_PASS_PLAIN" | sed 's/\$/\$\$/g')
-        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$DASHBOARD_PASS\"|g" compose/traefik.yml
+        local escaped_pass=$(printf '%s\n' "$DASHBOARD_PASS" | sed 's/[&/\]/\\&/g')
+        sed -i "s|traefik.http.middlewares.dashboard-auth.basicauth.users:.*|traefik.http.middlewares.dashboard-auth.basicauth.users: \"$escaped_pass\"|g" compose/traefik.yml
+        echo -e "${green}✓ Dashboard-Authentifizierung konfiguriert (Benutzer: $CONFIG_DASHBOARD_USER)${nc}"
     fi
 
     step_done "Konfiguration angewendet"
@@ -2144,6 +2176,33 @@ install_backend_stack() {
             error_exit "Die Datei $traefik_config_file existiert nicht."
         fi
         sed -i "s/email: \".*\"/email: \"$ssl_email\"/g" "$traefik_config_file"
+
+        # Let's Encrypt Modus-Wechsel erkennen und acme.json zurücksetzen
+        local acme_file="data/traefik/certs/acme.json"
+        local mode_changed=false
+
+        # Prüfe ob Modus gewechselt wurde
+        if [ -f "$traefik_config_file" ]; then
+            local has_castaging=$(grep -c "caServer.*staging" "$traefik_config_file" 2>/dev/null || echo "0")
+
+            if [ "$CONFIG_ACME_STAGING" = true ] && [ "$has_castaging" -eq 0 ]; then
+                mode_changed=true
+                echo -e "${yellow}⚠ Wechsel zu Staging-Modus erkannt${nc}"
+            elif [ "$CONFIG_ACME_STAGING" != true ] && [ "$has_castaging" -gt 0 ]; then
+                mode_changed=true
+                echo -e "${yellow}⚠ Wechsel zu Production-Modus erkannt${nc}"
+            fi
+        fi
+
+        # Bei Modus-Wechsel: acme.json sichern und neu erstellen
+        if [ "$mode_changed" = true ] && [ -f "$acme_file" ] && [ -s "$acme_file" ]; then
+            local backup_file="${acme_file}.backup.$(date +%Y%m%d-%H%M%S)"
+            echo -e "${cyan}Sichere alte Zertifikate nach: $backup_file${nc}"
+            cp "$acme_file" "$backup_file"
+            echo '{}' > "$acme_file"
+            chmod 600 "$acme_file"
+            echo -e "${yellow}⚠ Neue Zertifikate werden beim nächsten Start angefordert${nc}"
+        fi
 
         # Let's Encrypt Staging-Modus
         if [ "$CONFIG_ACME_STAGING" = true ]; then
