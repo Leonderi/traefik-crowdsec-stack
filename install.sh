@@ -92,11 +92,17 @@ setup_installation_directory() {
     # Prüfen ob Verzeichnis existiert
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${yellow}Verzeichnis existiert bereits!${nc}"
-        if ! confirm "Möchten Sie die bestehende Installation aktualisieren/neu konfigurieren?" "n"; then
+        # Bei Auto-Installation (backend-proxy) automatisch fortfahren
+        if [ "$INSTALL_TYPE" = "backend-proxy" ]; then
+            echo -e "${cyan}Auto-Installation: Aktualisiere bestehende Installation${nc}"
+        elif ! confirm "Möchten Sie die bestehende Installation aktualisieren/neu konfigurieren?" "n"; then
             error_exit "Installation abgebrochen"
         fi
     else
-        if ! confirm "Verzeichnis erstellen und dort installieren?" "y"; then
+        # Bei Auto-Installation (backend-proxy) automatisch erstellen
+        if [ "$INSTALL_TYPE" = "backend-proxy" ]; then
+            echo -e "${cyan}Auto-Installation: Erstelle Verzeichnis${nc}"
+        elif ! confirm "Verzeichnis erstellen und dort installieren?" "y"; then
             error_exit "Installation abgebrochen"
         fi
 
@@ -1665,7 +1671,8 @@ check_and_install_docker() {
 
     echo -e "${yellow}Docker ist nicht installiert${nc}"
 
-    if confirm "Möchten Sie Docker jetzt installieren?" "y"; then
+    # Bei Auto-Installation (backend-proxy) automatisch installieren
+    if [ "$INSTALL_TYPE" = "backend-proxy" ] || confirm "Möchten Sie Docker jetzt installieren?" "y"; then
         echo -e "${cyan}Installiere Docker...${nc}"
 
         # Docker Installation
