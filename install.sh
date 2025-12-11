@@ -1032,7 +1032,12 @@ install_backend_remote() {
     local domain="${BACKEND_DOMAINS[$index]}"
     local ssh_key="${BACKEND_SSH_KEYS[$index]}"  # Per-backend SSH key
     local install_dir="${BACKEND_INSTALL_DIRS[$index]:-/opt/containers/traefik-backend}"  # Installationsverzeichnis
-    local ssh_user="${BACKEND_SSH_USERS[$index]:-root}"  # Dedicated user (fallback to root)
+    local ssh_user="${BACKEND_SSH_USERS[$index]}"  # Dedicated user
+
+    # Fallback auf root wenn User nicht gesetzt oder leer
+    if [ -z "$ssh_user" ]; then
+        ssh_user="root"
+    fi
 
     clear
     echo -e "${bold}${cyan}Backend installieren: $hostname${nc}\n"
@@ -1177,7 +1182,12 @@ show_container_status() {
             local ssh_key="${BACKEND_SSH_KEYS[$i]}"
             local status="${BACKEND_STATUS[$i]}"
             local install_dir="${BACKEND_INSTALL_DIRS[$i]:-/opt/containers/traefik-backend}"
-            local ssh_user="${BACKEND_SSH_USERS[$i]:-root}"
+            local ssh_user="${BACKEND_SSH_USERS[$i]}"
+
+            # Fallback auf root wenn User nicht gesetzt oder leer
+            if [ -z "$ssh_user" ]; then
+                ssh_user="root"
+            fi
 
             echo -e "${bold}${green}=== BACKEND: $hostname ===${nc}"
 
@@ -1227,7 +1237,12 @@ ssh_to_backend() {
     local dhcp_ip="${BACKEND_DHCP_IPS[$index]}"
     local ssh_key="${BACKEND_SSH_KEYS[$index]}"
     local status="${BACKEND_STATUS[$index]}"
-    local ssh_user="${BACKEND_SSH_USERS[$index]:-root}"
+    local ssh_user="${BACKEND_SSH_USERS[$index]}"
+
+    # Fallback auf root wenn User nicht gesetzt oder leer
+    if [ -z "$ssh_user" ]; then
+        ssh_user="root"
+    fi
 
     # Bestimme welche IP verwendet werden soll
     local connect_ip=""
@@ -1240,6 +1255,26 @@ ssh_to_backend() {
         echo -e "${yellow}Hinweis: Konfigurieren Sie das Backend zuerst (Option 3)${nc}"
         read -p "Drücken Sie Enter um fortzufahren..."
         return 1
+    fi
+
+    # Wenn User "root" ist und Backend konfiguriert, biete an dedicated user zu erstellen
+    if [ "$ssh_user" = "root" ] && [ "$status" = "configured" -o "$status" = "installed" ]; then
+        clear
+        echo -e "${yellow}⚠ Backend verwendet noch root-User${nc}\n"
+        if confirm "Möchten Sie jetzt einen dedizierten User erstellen? (empfohlen)" "y"; then
+            local new_user=$(setup_backend_user "$hostname" "$ssh_key" "$connect_ip")
+            if [ $? -eq 0 ] && [ -n "$new_user" ]; then
+                BACKEND_SSH_USERS[$index]="$new_user"
+                ssh_user="$new_user"
+                # Konfiguration speichern
+                save_installation_config
+                echo -e "${green}✓ Dedicated User wurde erstellt und gespeichert${nc}"
+                sleep 2
+            else
+                echo -e "${yellow}⚠ User-Erstellung fehlgeschlagen, verwende root${nc}"
+                sleep 2
+            fi
+        fi
     fi
 
     clear
